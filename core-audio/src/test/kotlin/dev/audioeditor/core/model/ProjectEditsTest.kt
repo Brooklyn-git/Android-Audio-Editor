@@ -55,4 +55,20 @@ class ProjectEditsTest {
         assertEquals(project, ProjectEdits.split(project, "t1", "c1", 1_000L))
         assertEquals(project, ProjectEdits.split(project, "t1", "c1", 8_000L))
     }
+
+    @Test
+    fun deleteClipRemovesOnlyTheRequestedClip() {
+        val other = clip.copy(id = "c2", timelineStartMs = 6_000L)
+        val withTwo = project.copy(tracks = listOf(project.tracks[0].copy(clips = listOf(clip, other))))
+
+        val deleted = ProjectEdits.deleteClip(withTwo, "t1", "c1")
+
+        assertEquals(listOf("c2"), deleted.tracks[0].clips.map { it.id })
+        assertEquals(2, withTwo.tracks[0].clips.size)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun deleteClipRejectsUnknownClip() {
+        ProjectEdits.deleteClip(project, "t1", "missing")
+    }
 }

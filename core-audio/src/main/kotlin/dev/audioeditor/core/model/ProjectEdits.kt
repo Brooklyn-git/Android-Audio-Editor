@@ -19,6 +19,12 @@ object ProjectEdits {
         return ProjectOps.replaceClip(project, trackId, clip.copy(sourceInMs = from, sourceOutMs = to))
     }
 
+    /** Removes a clip from its track without touching the underlying source file. */
+    fun deleteClip(project: Project, trackId: String, clipId: String): Project {
+        requireClip(project, trackId, clipId)
+        return ProjectOps.removeClip(project, trackId, clipId)
+    }
+
     /** Moves a clip along the timeline. Negative starts are clamped to zero. */
     fun move(project: Project, trackId: String, clipId: String, timelineStartMs: Long): Project {
         val clip = requireClip(project, trackId, clipId)
