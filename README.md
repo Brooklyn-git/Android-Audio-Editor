@@ -8,15 +8,18 @@ AOSP media APIs. No FFmpeg or proprietary SDKs are used.
 - Record from the microphone to WAV
 - Import audio through SAF (`ACTION_OPEN_DOCUMENT`), decoded with `MediaCodec`
 - Export the mixed project to WAV through SAF (`ACTION_CREATE_DOCUMENT`)
-- Crop clips by dragging either edge
-- Drag clips along the timeline, long-press a clip to split it, undo/redo
+- Crop clips by dragging either edge; selected clips show resize stripes
+- Drag clips along the timeline, undo/redo
+- Long-press a clip for a menu with **Delete**, **Split**, and **Noise Reduction**
+  (current track only)
 - Audacity-style noise reduction: select a noise-only passage, tap **Get noise**,
   then **Reduce noise** and choose current track or all tracks
 - Live waveform and elapsed time while recording; moving red playhead during playback
+- All UI text lives in `app/src/main/res/values/strings.xml` for easy translation
 
 The timeline shows cached min/max waveform peaks. Tap the ruler to move the
 playhead, tap a clip to select it, drag its body to move it, drag an edge to crop,
-or long-press it to split.
+or long-press it (about one second) to open the clip menu.
 
 ## Build
 
