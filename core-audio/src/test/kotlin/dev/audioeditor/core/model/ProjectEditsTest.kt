@@ -27,6 +27,53 @@ class ProjectEditsTest {
     }
 
     @Test
+    fun trimLeftKeepsRightEdgeFixedAndCanRestoreSource() {
+        val trimmed = ProjectEdits.trimLeft(project, "t1", "c1", 3_000L)
+        val trimmedClip = trimmed.tracks[0].clips[0]
+        assertEquals(3_000L, trimmedClip.sourceInMs)
+        assertEquals(4_000L, trimmedClip.timelineStartMs)
+        assertEquals(clip.endsAtMs(), trimmedClip.endsAtMs())
+
+        val restored = ProjectEdits.trimLeft(project, "t1", "c1", 0L)
+        val restoredClip = restored.tracks[0].clips[0]
+        assertEquals(0L, restoredClip.sourceInMs)
+        assertEquals(1_000L, restoredClip.timelineStartMs)
+        assertEquals(clip.endsAtMs(), restoredClip.endsAtMs())
+
+        val clamped = ProjectEdits.trimLeft(project, "t1", "c1", 20_000L)
+        assertEquals(clip.sourceOutMs - 1L, clamped.tracks[0].clips[0].sourceInMs)
+    }
+
+    @Test
+    fun trimLeftCannotMoveClipBeforeTimelineZero() {
+        val nearStart = clip.copy(sourceInMs = 1_000L, timelineStartMs = 500L)
+        val withNearStart = project.copy(
+            tracks = listOf(project.tracks[0].copy(clips = listOf(nearStart))),
+        )
+
+        val trimmed = ProjectEdits.trimLeft(withNearStart, "t1", "c1", 0L)
+        val result = trimmed.tracks[0].clips[0]
+
+        assertEquals(500L, result.sourceInMs)
+        assertEquals(0L, result.timelineStartMs)
+        assertEquals(nearStart.endsAtMs(), result.endsAtMs())
+    }
+
+    @Test
+    fun trimRightCanExtendUpToSourceDuration() {
+        val extended = ProjectEdits.trimRight(project, "t1", "c1", 8_000L)
+        val result = extended.tracks[0].clips[0]
+        assertEquals(1_000L, result.sourceInMs)
+        assertEquals(8_000L, result.sourceOutMs)
+        assertEquals(clip.timelineStartMs, result.timelineStartMs)
+
+        val clamped = ProjectEdits.trimRight(project, "t1", "c1", 20_000L)
+        assertEquals(source.durationMs, clamped.tracks[0].clips[0].sourceOutMs)
+        val collapsed = ProjectEdits.trimRight(project, "t1", "c1", 0L)
+        assertEquals(clip.sourceInMs + 1L, collapsed.tracks[0].clips[0].sourceOutMs)
+    }
+
+    @Test
     fun moveChangesOnlyTimelinePosition() {
         val moved = ProjectEdits.move(project, "t1", "c1", 7_500L)
         assertEquals(7_500L, moved.tracks[0].clips[0].timelineStartMs)
@@ -48,6 +95,21 @@ class ProjectEditsTest {
         assertEquals(listOf("c2", "c1"), moved.tracks[1].clips.map { it.id })
         assertEquals(9_000L, moved.tracks[1].clips[1].timelineStartMs)
         assertEquals(1, withTwoTracks.tracks[0].clips.size)
+    }
+
+    @Test
+    fun moveToTrackStillWorksAfterClipMigrated() {
+        val t2 = Track("t2", "Track 2")
+        val t3 = Track("t3", "Track 3")
+        val threeTracks = project.copy(tracks = listOf(project.tracks[0], t2, t3))
+
+        val first = ProjectEdits.moveToTrack(threeTracks, "t1", "c1", "t2", 6_000L)
+        val second = ProjectEdits.moveToTrack(first, "t1", "c1", "t3", 8_000L)
+
+        assertEquals(0, second.tracks[0].clips.size)
+        assertEquals(0, second.tracks[1].clips.size)
+        assertEquals(listOf("c1"), second.tracks[2].clips.map { it.id })
+        assertEquals(8_000L, second.tracks[2].clips[0].timelineStartMs)
     }
 
     @Test

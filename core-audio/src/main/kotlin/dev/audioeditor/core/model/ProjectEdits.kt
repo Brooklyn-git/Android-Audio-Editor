@@ -19,6 +19,36 @@ object ProjectEdits {
         return ProjectOps.replaceClip(project, trackId, clip.copy(sourceInMs = from, sourceOutMs = to))
     }
 
+    /**
+     * Trims the left edge to a source time while keeping the clip's right edge
+     * on the timeline fixed. Dragging past the available source is clamped.
+     */
+    fun trimLeft(project: Project, trackId: String, clipId: String, sourceInMs: Long): Project {
+        val clip = requireClip(project, trackId, clipId)
+        val maxIn = minOf(sourceDuration(project, clip) - 1L, clip.sourceOutMs - 1L)
+        if (maxIn < 0L) return project
+        val minIn = maxOf(0L, clip.sourceInMs - clip.timelineStartMs).coerceAtMost(maxIn)
+        val newIn = sourceInMs.coerceIn(minIn, maxIn)
+        if (newIn == clip.sourceInMs) return project
+        val newStart = clip.timelineStartMs + newIn - clip.sourceInMs
+        return ProjectOps.replaceClip(
+            project,
+            trackId,
+            clip.copy(sourceInMs = newIn, timelineStartMs = newStart),
+        )
+    }
+
+    /** Trims the right edge to a source time, clamped to the source bounds. */
+    fun trimRight(project: Project, trackId: String, clipId: String, sourceOutMs: Long): Project {
+        val clip = requireClip(project, trackId, clipId)
+        val newOut = sourceOutMs.coerceIn(
+            clip.sourceInMs + 1L,
+            sourceDuration(project, clip),
+        )
+        if (newOut == clip.sourceOutMs) return project
+        return ProjectOps.replaceClip(project, trackId, clip.copy(sourceOutMs = newOut))
+    }
+
     /** Removes a clip from its track without touching the underlying source file. */
     fun deleteClip(project: Project, trackId: String, clipId: String): Project {
         requireClip(project, trackId, clipId)
@@ -41,10 +71,14 @@ object ProjectEdits {
         targetTrackId: String,
         timelineStartMs: Long,
     ): Project {
-        val clip = requireClip(project, trackId, clipId)
-        val target = ProjectOps.trackById(project, targetTrackId) ?: return project
+        if (ProjectOps.trackById(project, targetTrackId) == null) return project
+        // During a drag the clip may already have migrated, making the original
+        // track id stale. Locating it by id keeps repeated drag events valid.
+        val (actualTrackId, clip) = project.tracks.firstNotNullOfOrNull { track ->
+            track.clips.firstOrNull { it.id == clipId }?.let { track.id to it }
+        } ?: return project
         val moved = clip.copy(timelineStartMs = timelineStartMs.coerceAtLeast(0L))
-        val withoutClip = ProjectOps.removeClip(project, trackId, clipId)
+        val withoutClip = ProjectOps.removeClip(project, actualTrackId, clipId)
         val targetAfterRemoval = ProjectOps.trackById(withoutClip, targetTrackId) ?: return project
         val updatedTarget = targetAfterRemoval.copy(
             clips = (targetAfterRemoval.clips + moved).sortedBy { it.timelineStartMs },
@@ -77,4 +111,8 @@ object ProjectEdits {
     private fun requireClip(project: Project, trackId: String, clipId: String): Clip =
         ProjectOps.trackById(project, trackId)?.clips?.firstOrNull { it.id == clipId }
             ?: error("Clip $clipId not found on track $trackId")
+
+    private fun sourceDuration(project: Project, clip: Clip): Long =
+        ProjectOps.sourceById(project, clip.sourceId)?.durationMs
+            ?: error("Source ${clip.sourceId} is missing")
 }
