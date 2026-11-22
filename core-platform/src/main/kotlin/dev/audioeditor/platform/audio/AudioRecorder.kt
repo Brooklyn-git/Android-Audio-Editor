@@ -5,16 +5,23 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
+import dev.audioeditor.core.pcm.Pcm16
 import dev.audioeditor.core.pcm.WavFileWriter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.max
 
 /** Records microphone input directly to a 16-bit PCM WAV file. */
 class AudioRecorder {
@@ -31,6 +38,14 @@ class AudioRecorder {
     private var record: AudioRecord? = null
     private var writer: WavFileWriter? = null
     private var recording = false
+    private var startRealtimeMs = 0L
+    private val waveformHistory = ArrayDeque<Float>()
+
+    private val _waveform = MutableStateFlow<List<Float>>(emptyList())
+    val waveform: StateFlow<List<Float>> = _waveform.asStateFlow()
+
+    private val _elapsedMs = MutableStateFlow(0L)
+    val elapsedMs: StateFlow<Long> = _elapsedMs.asStateFlow()
 
     val isRecording: Boolean get() = recording
 
@@ -58,6 +73,10 @@ class AudioRecorder {
         check(audioRecord.state == AudioRecord.STATE_INITIALIZED) { "Could not initialize microphone" }
 
         val activeWriter = WavFileWriter(file, sampleRate, channels)
+        waveformHistory.clear()
+        _waveform.value = emptyList()
+        _elapsedMs.value = 0L
+        startRealtimeMs = SystemClock.elapsedRealtime()
         record = audioRecord
         writer = activeWriter
         recording = true
@@ -74,7 +93,10 @@ class AudioRecorder {
                         buffer.limit(read)
                         val bytes = ByteArray(read)
                         buffer.get(bytes)
-                        activeWriter.write(pcm16ToFloat(bytes))
+                        val samples = Pcm16.toFloats(bytes)
+                        activeWriter.write(samples)
+                        appendWaveformPeaks(samples)
+                        _elapsedMs.value = SystemClock.elapsedRealtime() - startRealtimeMs
                     } else if (read < 0) {
                         break
                     }
@@ -111,6 +133,21 @@ class AudioRecorder {
         )
     }
 
+    private fun appendWaveformPeaks(samples: FloatArray) {
+        if (samples.isEmpty()) return
+        val bucketSize = max(1, samples.size / WAVEFORM_BUCKETS)
+        var offset = 0
+        while (offset < samples.size) {
+            val end = minOf(samples.size, offset + bucketSize)
+            var peak = 0f
+            for (i in offset until end) peak = max(peak, abs(samples[i]))
+            waveformHistory.addLast(peak)
+            while (waveformHistory.size > WAVEFORM_BUCKETS) waveformHistory.removeFirst()
+            offset = end
+        }
+        _waveform.value = waveformHistory.toList()
+    }
+
     companion object {
         fun hasPermission(androidContext: android.content.Context): Boolean =
             ContextCompat.checkSelfPermission(
@@ -118,13 +155,6 @@ class AudioRecorder {
                 Manifest.permission.RECORD_AUDIO,
             ) == PackageManager.PERMISSION_GRANTED
 
-        private fun pcm16ToFloat(bytes: ByteArray): FloatArray {
-            require(bytes.size % 2 == 0)
-            return FloatArray(bytes.size / 2) { i ->
-                val low = bytes[i * 2].toInt() and 0xff
-                val high = bytes[i * 2 + 1].toInt() and 0xff
-                ((low or (high shl 8)).toShort()) / 32768f
-            }
-        }
+        private const val WAVEFORM_BUCKETS = 96
     }
 }
