@@ -1,4 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Audio Editor</string>
+
+    <string name="action_import">Import</string>
+    <string name="action_export">Export</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_record">Record</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_redo">Redo</string>
+    <string name="action_get_noise">Get noise</string>
+    <string name="action_reduce_noise">Reduce noise</string>
+    <string name="action_split">Split</string>
+    <string name="action_cancel">Cancel</string>
+
+    <string name="menu_delete">Delete</string>
+    <string name="menu_split">Split</string>
+    <string name="menu_noise_reduction">Noise Reduction</string>
+
+    <string name="dialog_split_title">Split clip?</string>
+    <string name="dialog_split_message">Split this clip at %1$s?</string>
+    <string name="dialog_noise_scope_title">Reduce noise</string>
+    <string name="dialog_noise_scope_message">Apply the captured noise profile to:</string>
+    <string name="dialog_noise_scope_current">Current track only</string>
+    <string name="dialog_noise_scope_all">All tracks</string>
+
+    <string name="status_ready">Ready</string>
+    <string name="status_working">%1$s (working...)</string>
+    <string name="status_recording">Recording %1$s</string>
+    <string name="status_importing">Importing audio...</string>
+    <string name="status_import_failed">Import failed: %1$s</string>
+    <string name="status_recording_start_failed">Could not start recording: %1$s</string>
+    <string name="status_saving_recording">Saving recording...</string>
+    <string name="status_nothing_recorded">Nothing was recorded</string>
+    <string name="status_recording_added">Recording added</string>
+    <string name="status_recording_save_failed">Could not save recording: %1$s</string>
+    <string name="status_exporting">Exporting WAV...</string>
+    <string name="status_exported">Exported %1$d ms of audio</string>
+    <string name="status_export_failed">Export failed: %1$s</string>
+    <string name="status_split_at">Split at %1$s</string>
+    <string name="status_clip_deleted">Clip deleted</string>
+    <string name="status_learning_noise">Learning noise profile...</string>
+    <string name="status_noise_captured">Noise profile captured from %1$d ms</string>
+    <string name="status_noise_capture_failed">Could not capture noise: %1$s</string>
+    <string name="status_noise_profile_missing">Capture a noise profile first</string>
+    <string name="status_reducing_noise">Reducing noise...</string>
+    <string name="status_noise_reduced_current">Noise reduced (current track)</string>
+    <string name="status_noise_reduced_all">Noise reduced (all tracks)</string>
+    <string name="status_noise_no_audio">No audio to reduce on this track</string>
+    <string name="status_noise_failed">Noise reduction failed: %1$s</string>
+    <string name="status_undo">Undo</string>
+    <string name="status_redo">Redo</string>
+
+    <string name="time_current_of_total">%1$s / %2$s</string>
+    <string name="selected_range">Selected: %1$s–%2$s</string>
+    <string name="tip_timeline">Tip: tap a clip to select it, drag its body to move it, drag either edge to crop, or long-press it for more options. Tap the ruler to move the playhead. Crop to a noise-only passage, tap Get noise, then reduce noise.</string>
 </resources>
