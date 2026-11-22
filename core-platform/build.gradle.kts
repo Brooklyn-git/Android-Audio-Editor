@@ -19,4 +19,5 @@ android {
 dependencies {
     api(project(":core-audio"))
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 }
