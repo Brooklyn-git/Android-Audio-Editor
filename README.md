@@ -9,12 +9,14 @@ AOSP media APIs. No FFmpeg or proprietary SDKs are used.
 - Import audio through SAF (`ACTION_OPEN_DOCUMENT`), decoded with `MediaCodec`
 - Export the mixed project to WAV through SAF (`ACTION_CREATE_DOCUMENT`)
 - Crop clips by dragging either edge
-- Drag clips along the timeline, split at the playhead, undo/redo
+- Drag clips along the timeline, long-press a clip to split it, undo/redo
 - Audacity-style noise reduction: select a noise-only passage, tap **Get noise**,
-  then **Reduce noise**
+  then **Reduce noise** and choose current track or all tracks
+- Live waveform and elapsed time while recording; moving red playhead during playback
 
 The timeline shows cached min/max waveform peaks. Tap the ruler to move the
-playhead, tap a clip to select it, drag its body to move it, or drag an edge to crop.
+playhead, tap a clip to select it, drag its body to move it, drag an edge to crop,
+or long-press it to split.
 
 ## Build
 
