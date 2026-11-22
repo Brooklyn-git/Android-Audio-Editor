@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,6 +22,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.audioeditor.core.model.Clip
@@ -34,7 +37,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 private data class ClipHit(val track: Track, val clip: Clip, val edge: Edge)
+private data class ClipDrag(val hit: ClipHit, val startOffset: Offset)
 private enum class Edge { BODY, LEFT, RIGHT }
+
+private const val LONG_PRESS_TIMEOUT_MS = 900L
 
 @Composable
 fun Timeline(
@@ -56,7 +62,7 @@ fun Timeline(
 ) {
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
-    var dragState by remember { mutableStateOf<ClipHit?>(null) }
+    var dragState by remember { mutableStateOf<ClipDrag?>(null) }
     val currentProject = remember { mutableStateOf(project) }
     currentProject.value = project
 
@@ -66,163 +72,191 @@ fun Timeline(
         projectDurationMs,
         if (isRecording) recordingElapsedMs + 2_000L else 0L,
     )
+    val viewConfiguration = LocalViewConfiguration.current
 
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val pxPerMs = with(density) { maxWidth.toPx() } / durationMs
-        val trackPx = with(density) { trackHeight.toPx() }
-        val liveOffset = if (isRecording) trackPx else 0f
-        val trackCount = maxOf(1, project.tracks.size)
-        val totalHeight = trackHeight * (trackCount + if (isRecording) 1 else 0)
+    CompositionLocalProvider(
+        LocalViewConfiguration provides SlowLongPressViewConfiguration(viewConfiguration),
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val pxPerMs = with(density) { maxWidth.toPx() } / durationMs
+            val trackPx = with(density) { trackHeight.toPx() }
+            val liveOffset = if (isRecording) trackPx else 0f
+            val trackCount = maxOf(1, project.tracks.size)
+            val totalHeight = trackHeight * (trackCount + if (isRecording) 1 else 0)
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(totalHeight)
-                .background(colors.surface)
-                .pointerInput(pxPerMs, isRecording, liveOffset) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            val timeMs = (offset.x / pxPerMs).toLong().coerceIn(0L, durationMs)
-                            onSeek(timeMs)
-                            val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                            onSelect(hit?.clip?.id)
-                        },
-                        onLongPress = { offset ->
-                            val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                            if (hit != null) {
-                                val atMs = (offset.x / pxPerMs).toLong().coerceIn(
-                                    hit.clip.timelineStartMs,
-                                    hit.clip.endsAtMs(),
-                                )
-                                onSelect(hit.clip.id)
-                                onLongPress(hit.track.id, hit.clip.id, atMs)
-                            }
-                        },
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(totalHeight)
+                    .background(colors.surface)
+                    .pointerInput(pxPerMs, isRecording, liveOffset) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                val timeMs = (offset.x / pxPerMs).toLong().coerceIn(0L, durationMs)
+                                onSeek(timeMs)
+                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
+                                onSelect(hit?.clip?.id)
+                            },
+                            onLongPress = { offset ->
+                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
+                                if (hit != null) {
+                                    val atMs = (offset.x / pxPerMs).toLong().coerceIn(
+                                        hit.clip.timelineStartMs,
+                                        hit.clip.endsAtMs(),
+                                    )
+                                    onSelect(hit.clip.id)
+                                    onLongPress(hit.track.id, hit.clip.id, atMs)
+                                }
+                            },
+                        )
+                    }
+                    .pointerInput(pxPerMs, isRecording, liveOffset) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
+                                if (hit != null) {
+                                    dragState = ClipDrag(hit, offset)
+                                    onSelect(hit.clip.id)
+                                    onGestureStart()
+                                }
+                            },
+                            onDrag = { change, _ ->
+                                val drag = dragState ?: return@detectDragGestures
+                                change.consume()
+                                val hit = drag.hit
+                                val deltaMs = ((change.position.x - drag.startOffset.x) / pxPerMs).toLong()
+                                when (hit.edge) {
+                                    Edge.BODY -> onMove(
+                                        hit.track.id,
+                                        hit.clip.id,
+                                        hit.clip.timelineStartMs + deltaMs,
+                                    )
+                                    Edge.LEFT -> onCrop(
+                                        hit.track.id,
+                                        hit.clip.id,
+                                        minOf(hit.clip.sourceOutMs - 1, hit.clip.sourceInMs + deltaMs)
+                                            .coerceAtLeast(0L),
+                                        hit.clip.sourceOutMs,
+                                    )
+                                    Edge.RIGHT -> onCrop(
+                                        hit.track.id,
+                                        hit.clip.id,
+                                        hit.clip.sourceInMs,
+                                        maxOf(hit.clip.sourceInMs + 1, hit.clip.sourceOutMs + deltaMs),
+                                    )
+                                }
+                            },
+                            onDragEnd = {
+                                dragState = null
+                                onGestureEnd()
+                            },
+                            onDragCancel = {
+                                dragState = null
+                                onGestureEnd()
+                            },
+                        )
+                    },
+            ) {
+                val heightPx = size.height
+
+                val stepMs = when {
+                    pxPerMs * 1_000 < 40 -> 10_000L
+                    pxPerMs * 1_000 < 90 -> 5_000L
+                    pxPerMs * 1_000 < 180 -> 2_000L
+                    else -> 1_000L
+                }
+                var tick = 0L
+                while (tick <= durationMs) {
+                    val x = tick * pxPerMs
+                    drawLine(
+                        color = colors.outlineVariant.copy(alpha = 0.5f),
+                        start = Offset(x, 0f),
+                        end = Offset(x, heightPx),
+                        strokeWidth = 1f,
+                    )
+                    tick += stepMs
+                }
+
+                if (isRecording) {
+                    drawRect(
+                        color = colors.errorContainer.copy(alpha = 0.35f),
+                        topLeft = Offset(0f, 0f),
+                        size = Size(size.width, trackPx),
+                    )
+                    drawLiveWaveform(recordingWaveform, size.width, trackPx, colors.error)
+                    val recordX = (recordingElapsedMs * pxPerMs).coerceIn(0f, size.width)
+                    drawLine(
+                        color = colors.error,
+                        start = Offset(recordX, 0f),
+                        end = Offset(recordX, heightPx),
+                        strokeWidth = 2f,
                     )
                 }
-                .pointerInput(pxPerMs, isRecording, liveOffset) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                            if (hit != null) {
-                                dragState = hit
-                                onSelect(hit.clip.id)
-                                onGestureStart()
-                            }
-                        },
-                        onDrag = { change, dragAmount ->
-                            val hit = dragState ?: return@detectDragGestures
-                            change.consume()
-                            val deltaMs = (dragAmount.x / pxPerMs).toLong()
-                            when (hit.edge) {
-                                Edge.BODY -> onMove(
-                                    hit.track.id,
-                                    hit.clip.id,
-                                    hit.clip.timelineStartMs + deltaMs,
-                                )
-                                Edge.LEFT -> onCrop(
-                                    hit.track.id,
-                                    hit.clip.id,
-                                    minOf(hit.clip.sourceOutMs - 1, hit.clip.sourceInMs + deltaMs)
-                                        .coerceAtLeast(0L),
-                                    hit.clip.sourceOutMs,
-                                )
-                                Edge.RIGHT -> onCrop(
-                                    hit.track.id,
-                                    hit.clip.id,
-                                    hit.clip.sourceInMs,
-                                    maxOf(hit.clip.sourceInMs + 1, hit.clip.sourceOutMs + deltaMs),
-                                )
-                            }
-                        },
-                        onDragEnd = {
-                            dragState = null
-                            onGestureEnd()
-                        },
-                        onDragCancel = {
-                            dragState = null
-                            onGestureEnd()
-                        },
+
+                project.tracks.forEachIndexed { index, track ->
+                    val top = liveOffset + index * trackPx
+                    drawLine(
+                        color = colors.outlineVariant,
+                        start = Offset(0f, top),
+                        end = Offset(size.width, top),
+                        strokeWidth = 1f,
                     )
-                },
-        ) {
-            val heightPx = size.height
+                    track.clips.forEach { clip ->
+                        val left = clip.timelineStartMs * pxPerMs
+                        val width = clip.durationMs * pxPerMs
+                        val selected = clip.id == selectedClipId
+                        drawRect(
+                            color = if (selected) colors.primaryContainer else colors.surfaceVariant,
+                            topLeft = Offset(left, top + 4f),
+                            size = Size(width, trackPx - 8f),
+                        )
+                        drawRect(
+                            color = if (selected) colors.primary else colors.outline,
+                            topLeft = Offset(left, top + 4f),
+                            size = Size(width, trackPx - 8f),
+                            style = Stroke(width = if (selected) 2f else 1f),
+                        )
+                        if (selected) {
+                            val handleWidth = with(density) { 4.dp.toPx() }
+                            val handleTop = top + 12f
+                            val handleBottom = top + trackPx - 12f
+                            drawLine(
+                                color = colors.primary,
+                                start = Offset(left + handleWidth / 2f, handleTop),
+                                end = Offset(left + handleWidth / 2f, handleBottom),
+                                strokeWidth = handleWidth,
+                            )
+                            drawLine(
+                                color = colors.primary,
+                                start = Offset(left + width - handleWidth / 2f, handleTop),
+                                end = Offset(left + width - handleWidth / 2f, handleBottom),
+                                strokeWidth = handleWidth,
+                            )
+                        }
 
-            val stepMs = when {
-                pxPerMs * 1_000 < 40 -> 10_000L
-                pxPerMs * 1_000 < 90 -> 5_000L
-                pxPerMs * 1_000 < 180 -> 2_000L
-                else -> 1_000L
-            }
-            var tick = 0L
-            while (tick <= durationMs) {
-                val x = tick * pxPerMs
-                drawLine(
-                    color = colors.outlineVariant.copy(alpha = 0.5f),
-                    start = Offset(x, 0f),
-                    end = Offset(x, heightPx),
-                    strokeWidth = 1f,
-                )
-                tick += stepMs
-            }
-
-            if (isRecording) {
-                drawRect(
-                    color = colors.errorContainer.copy(alpha = 0.35f),
-                    topLeft = Offset(0f, 0f),
-                    size = Size(size.width, trackPx),
-                )
-                drawLiveWaveform(recordingWaveform, size.width, trackPx, colors.error)
-                val recordX = (recordingElapsedMs * pxPerMs).coerceIn(0f, size.width)
-                drawLine(
-                    color = colors.error,
-                    start = Offset(recordX, 0f),
-                    end = Offset(recordX, heightPx),
-                    strokeWidth = 2f,
-                )
-            }
-
-            project.tracks.forEachIndexed { index, track ->
-                val top = liveOffset + index * trackPx
-                drawLine(
-                    color = colors.outlineVariant,
-                    start = Offset(0f, top),
-                    end = Offset(size.width, top),
-                    strokeWidth = 1f,
-                )
-                track.clips.forEach { clip ->
-                    val left = clip.timelineStartMs * pxPerMs
-                    val width = clip.durationMs * pxPerMs
-                    val selected = clip.id == selectedClipId
-                    drawRect(
-                        color = if (selected) colors.primaryContainer else colors.surfaceVariant,
-                        topLeft = Offset(left, top + 4f),
-                        size = Size(width, trackPx - 8f),
-                    )
-                    drawRect(
-                        color = if (selected) colors.primary else colors.outline,
-                        topLeft = Offset(left, top + 4f),
-                        size = Size(width, trackPx - 8f),
-                        style = Stroke(width = if (selected) 2f else 1f),
-                    )
-
-                    val peak = peaks[clip.sourceId]
-                    if (peak != null) {
-                        drawWaveform(peak, clip, width.toInt(), left, top, trackPx, colors.primary)
+                        val peak = peaks[clip.sourceId]
+                        if (peak != null) {
+                            drawWaveform(peak, clip, width.toInt(), left, top, trackPx, colors.primary)
+                        }
                     }
                 }
-            }
 
-            val playheadX = playheadMs * pxPerMs
-            drawLine(
-                color = colors.error,
-                start = Offset(playheadX, liveOffset),
-                end = Offset(playheadX, heightPx),
-                strokeWidth = if (isRecording) 1f else 2f,
-            )
+                val playheadX = playheadMs * pxPerMs
+                drawLine(
+                    color = colors.error,
+                    start = Offset(playheadX, liveOffset),
+                    end = Offset(playheadX, heightPx),
+                    strokeWidth = if (isRecording) 1f else 2f,
+                )
+            }
         }
     }
 }
+
+private class SlowLongPressViewConfiguration(
+    delegate: ViewConfiguration,
+    override val longPressTimeoutMillis: Long = LONG_PRESS_TIMEOUT_MS,
+) : ViewConfiguration by delegate
 
 private fun hitClip(
     project: Project,
