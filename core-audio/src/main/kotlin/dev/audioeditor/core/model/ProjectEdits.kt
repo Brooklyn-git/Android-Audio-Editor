@@ -26,13 +26,30 @@ object ProjectEdits {
     }
 
     /** Moves a clip along the timeline. Negative starts are clamped to zero. */
-    fun move(project: Project, trackId: String, clipId: String, timelineStartMs: Long): Project {
+    fun move(project: Project, trackId: String, clipId: String, timelineStartMs: Long): Project =
+        moveToTrack(project, trackId, clipId, trackId, timelineStartMs)
+
+    /**
+     * Moves a clip to a timeline position, possibly on another track.
+     * The source track keeps its other clips; the target track receives this clip
+     * sorted by timeline position.
+     */
+    fun moveToTrack(
+        project: Project,
+        trackId: String,
+        clipId: String,
+        targetTrackId: String,
+        timelineStartMs: Long,
+    ): Project {
         val clip = requireClip(project, trackId, clipId)
-        return ProjectOps.replaceClip(
-            project,
-            trackId,
-            clip.copy(timelineStartMs = timelineStartMs.coerceAtLeast(0L)),
+        val target = ProjectOps.trackById(project, targetTrackId) ?: return project
+        val moved = clip.copy(timelineStartMs = timelineStartMs.coerceAtLeast(0L))
+        val withoutClip = ProjectOps.removeClip(project, trackId, clipId)
+        val targetAfterRemoval = ProjectOps.trackById(withoutClip, targetTrackId) ?: return project
+        val updatedTarget = targetAfterRemoval.copy(
+            clips = (targetAfterRemoval.clips + moved).sortedBy { it.timelineStartMs },
         )
+        return ProjectOps.replaceTrack(withoutClip, updatedTarget)
     }
 
     /** Splits a clip at a timeline position into two adjacent clips. */

@@ -37,6 +37,20 @@ class ProjectEditsTest {
     }
 
     @Test
+    fun moveToTrackReassignsClipAndSortsTarget() {
+        val otherClip = clip.copy(id = "c2", timelineStartMs = 8_000L)
+        val target = Track("t2", "Track 2", listOf(otherClip))
+        val withTwoTracks = project.copy(tracks = listOf(project.tracks[0], target))
+
+        val moved = ProjectEdits.moveToTrack(withTwoTracks, "t1", "c1", "t2", 9_000L)
+
+        assertEquals(0, moved.tracks[0].clips.size)
+        assertEquals(listOf("c2", "c1"), moved.tracks[1].clips.map { it.id })
+        assertEquals(9_000L, moved.tracks[1].clips[1].timelineStartMs)
+        assertEquals(1, withTwoTracks.tracks[0].clips.size)
+    }
+
+    @Test
     fun splitCreatesTwoAdjacentClips() {
         val split = ProjectEdits.split(project, "t1", "c1", 3_500L)
         val clips = split.tracks[0].clips
