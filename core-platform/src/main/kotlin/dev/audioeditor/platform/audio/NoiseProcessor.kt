@@ -1,5 +1,6 @@
 package dev.audioeditor.platform.audio
 
+import dev.audioeditor.core.dsp.NoiseProfile
 import dev.audioeditor.core.dsp.NoiseReducer
 import dev.audioeditor.core.model.AudioSourceRef
 import dev.audioeditor.core.model.newId
@@ -14,17 +15,12 @@ object NoiseProcessor {
 
     suspend fun denoise(
         source: AudioSourceRef,
-        fromMs: Long,
-        toMs: Long,
+        profile: NoiseProfile,
         reductionDb: Float = 12f,
         wavFile: File,
         peaksFile: File,
     ): AudioSourceRef = withContext(Dispatchers.IO) {
         val buffer = WavCodec.decode(File(source.wavPath))
-        val fromFrame = (fromMs * buffer.sampleRate / 1_000L).coerceIn(0L, buffer.frameCount.toLong()).toInt()
-        val toFrame = (toMs * buffer.sampleRate / 1_000L).coerceIn(fromFrame.toLong(), buffer.frameCount.toLong()).toInt()
-
-        val profile = NoiseReducer.captureProfile(buffer, fromFrame, toFrame)
         val reduced = NoiseReducer.reduce(buffer, profile, reductionDb)
 
         WavCodec.encode(wavFile, reduced.sampleRate, reduced.channels, reduced.samples)
