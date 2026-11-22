@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -209,6 +210,9 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 peaks = peaks,
                 selectedClipId = selectedId,
                 playheadMs = playheadMs,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(360.dp),
                 isRecording = isRecording,
                 recordingWaveform = recordingWaveform,
                 recordingElapsedMs = recordingElapsedMs,
@@ -220,8 +224,11 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                     viewModel.reduceNoise(EditorViewModel.NoiseScope.CURRENT_TRACK, trackId)
                 },
                 onGestureStart = { viewModel.beginGesture() },
-                onMove = { trackId, clipId, start -> viewModel.moveClip(trackId, clipId, start) },
-                onCrop = { trackId, clipId, from, to -> viewModel.cropClip(trackId, clipId, from, to) },
+                onMoveClip = { trackId, clipId, targetTrackId, start ->
+                    viewModel.moveClip(trackId, clipId, targetTrackId, start)
+                },
+                onTrimLeft = { trackId, clipId, sourceIn -> viewModel.trimLeft(trackId, clipId, sourceIn) },
+                onTrimRight = { trackId, clipId, sourceOut -> viewModel.trimRight(trackId, clipId, sourceOut) },
                 onGestureEnd = { viewModel.endGesture() },
             )
 

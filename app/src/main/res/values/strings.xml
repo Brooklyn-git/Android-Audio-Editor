@@ -43,6 +43,7 @@
     <string name="status_export_failed">Export failed: %1$s</string>
     <string name="status_split_at">Split at %1$s</string>
     <string name="status_clip_deleted">Clip deleted</string>
+    <string name="status_clip_moved">Clip moved</string>
     <string name="status_learning_noise">Learning noise profile...</string>
     <string name="status_noise_captured">Noise profile captured from %1$d ms</string>
     <string name="status_noise_capture_failed">Could not capture noise: %1$s</string>
@@ -57,5 +58,5 @@
 
     <string name="time_current_of_total">%1$s / %2$s</string>
     <string name="selected_range">Selected: %1$s–%2$s</string>
-    <string name="tip_timeline">Tip: tap a clip to select it, drag its body to move it, drag either edge to crop, or long-press it for more options. Tap the ruler to move the playhead. Crop to a noise-only passage, tap Get noise, then reduce noise.</string>
+    <string name="tip_timeline">Tip: drag empty space to scroll; drag the ruler to scrub. Drag a clip to move it along the timeline or onto another track. Drag the stripes at its edges to trim or extend it. Hold a clip for the menu. Crop to a noise-only passage, tap Get noise, then reduce noise.</string>
 </resources>

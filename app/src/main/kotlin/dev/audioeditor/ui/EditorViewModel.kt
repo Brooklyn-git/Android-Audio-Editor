@@ -238,13 +238,24 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         gestureBase = _project.value
     }
 
-    fun moveClip(trackId: String, clipId: String, startMs: Long) {
-        val next = ProjectEdits.move(_project.value, trackId, clipId, startMs)
+    fun moveClip(
+        trackId: String,
+        clipId: String,
+        targetTrackId: String,
+        startMs: Long,
+    ) {
+        val next = ProjectEdits.moveToTrack(_project.value, trackId, clipId, targetTrackId, startMs)
+        if (gestureBase != null) publish(next) else commit(next)
+        if (gestureBase == null) _status.value = text(R.string.status_clip_moved)
+    }
+
+    fun trimLeft(trackId: String, clipId: String, sourceInMs: Long) {
+        val next = ProjectEdits.trimLeft(_project.value, trackId, clipId, sourceInMs)
         if (gestureBase != null) publish(next) else commit(next)
     }
 
-    fun cropClip(trackId: String, clipId: String, sourceInMs: Long, sourceOutMs: Long) {
-        val next = ProjectEdits.crop(_project.value, trackId, clipId, sourceInMs, sourceOutMs)
+    fun trimRight(trackId: String, clipId: String, sourceOutMs: Long) {
+        val next = ProjectEdits.trimRight(_project.value, trackId, clipId, sourceOutMs)
         if (gestureBase != null) publish(next) else commit(next)
     }
 

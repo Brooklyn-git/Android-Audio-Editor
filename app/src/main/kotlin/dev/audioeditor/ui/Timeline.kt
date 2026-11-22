@@ -3,38 +3,46 @@ package dev.audioeditor.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -46,12 +54,23 @@ import dev.audioeditor.core.model.ProjectOps
 import dev.audioeditor.core.model.Track
 import dev.audioeditor.core.pcm.PeakLevel
 import dev.audioeditor.core.pcm.PeakPyramid
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-private data class ClipHit(val track: Track, val clip: Clip, val edge: Edge)
-private data class ClipDrag(val hit: ClipHit, val startOffset: Offset)
+private data class ClipHit(
+    val track: Track,
+    val clip: Clip,
+    val edge: Edge,
+)
+
 private data class ClipMenuRequest(
     val trackId: String,
     val clipId: String,
@@ -61,7 +80,13 @@ private data class ClipMenuRequest(
 
 private enum class Edge { BODY, LEFT, RIGHT }
 
-private const val LONG_PRESS_TIMEOUT_MS = 900L
+private enum class GestureMode { PENDING, MOVE, TRIM_LEFT, TRIM_RIGHT, PAN, SCRUB, MENU }
+
+/** Fixed zoom: the timeline scrolls instead of squeezing audio to fit the screen. */
+private const val PX_PER_MS = 0.12f
+private const val MOVE_HOLD_MS = 140L
+private const val MENU_HOLD_MS = 700L
+private const val AUTO_SCROLL_PX_PER_EVENT = 14f
 
 @Composable
 fun Timeline(
@@ -69,6 +94,7 @@ fun Timeline(
     peaks: Map<String, PeakPyramid>,
     selectedClipId: String?,
     playheadMs: Long,
+    modifier: Modifier = Modifier,
     isRecording: Boolean = false,
     recordingWaveform: List<Float> = emptyList(),
     recordingElapsedMs: Long = 0L,
@@ -79,162 +105,300 @@ fun Timeline(
     onSplitClip: (trackId: String, clipId: String, atMs: Long) -> Unit,
     onReduceNoiseForTrack: (trackId: String) -> Unit,
     onGestureStart: () -> Unit,
-    onMove: (trackId: String, clipId: String, startMs: Long) -> Unit,
-    onCrop: (trackId: String, clipId: String, sourceInMs: Long, sourceOutMs: Long) -> Unit,
+    onMoveClip: (trackId: String, clipId: String, targetTrackId: String, startMs: Long) -> Unit,
+    onTrimLeft: (trackId: String, clipId: String, sourceInMs: Long) -> Unit,
+    onTrimRight: (trackId: String, clipId: String, sourceOutMs: Long) -> Unit,
     onGestureEnd: () -> Unit,
 ) {
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
-    var dragState by remember { mutableStateOf<ClipDrag?>(null) }
+    val haptic = LocalHapticFeedback.current
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+
+    var panX by remember { mutableFloatStateOf(0f) }
+    var panY by remember { mutableFloatStateOf(0f) }
     var menuRequest by remember { mutableStateOf<ClipMenuRequest?>(null) }
-    val currentProject = remember { mutableStateOf(project) }
-    currentProject.value = project
+
+    val currentProject = rememberUpdatedState(project)
+    val currentOnSelect = rememberUpdatedState(onSelect)
+    val currentOnSeek = rememberUpdatedState(onSeek)
+    val currentOnMoveClip = rememberUpdatedState(onMoveClip)
+    val currentOnTrimLeft = rememberUpdatedState(onTrimLeft)
+    val currentOnTrimRight = rememberUpdatedState(onTrimRight)
+    val currentOnGestureStart = rememberUpdatedState(onGestureStart)
+    val currentOnGestureEnd = rememberUpdatedState(onGestureEnd)
 
     val projectDurationMs = ProjectOps.durationMs(project)
-    val durationMs = maxOf(
-        5_000L,
-        projectDurationMs,
-        if (isRecording) recordingElapsedMs + 2_000L else 0L,
-    )
-    val viewConfiguration = LocalViewConfiguration.current
 
-    CompositionLocalProvider(
-        LocalViewConfiguration provides SlowLongPressViewConfiguration(viewConfiguration),
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .clipToBounds()
+            .background(colors.surface),
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val pxPerMs = with(density) { maxWidth.toPx() } / durationMs
-            val trackPx = with(density) { trackHeight.toPx() }
-            val liveOffset = if (isRecording) trackPx else 0f
-            val trackCount = maxOf(1, project.tracks.size)
-            val totalHeight = trackHeight * (trackCount + if (isRecording) 1 else 0)
+        val viewportWidthPx = with(density) { maxWidth.toPx() }
+        val viewportHeightPx = with(density) { maxHeight.toPx() }
+        val trackPx = with(density) { trackHeight.toPx() }
+        val rulerPx = with(density) { 32.dp.toPx() }
+        val edgeTouchPx = with(density) { 24.dp.toPx() }
+        val handleWidthPx = with(density) { 6.dp.toPx() }
+        val autoScrollEdgePx = with(density) { 40.dp.toPx() }
+        val liveOffsetPx = if (isRecording) trackPx else 0f
+        val trackTopOffset = rulerPx + liveOffsetPx
 
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(totalHeight)
-                    .background(colors.surface)
-                    .pointerInput(pxPerMs, isRecording, liveOffset) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                menuRequest = null
-                                val timeMs = (offset.x / pxPerMs).toLong().coerceIn(0L, durationMs)
-                                onSeek(timeMs)
-                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                                onSelect(hit?.clip?.id)
-                            },
-                            onLongPress = { offset ->
-                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                                if (hit != null) {
-                                    val atMs = (offset.x / pxPerMs).toLong().coerceIn(
-                                        hit.clip.timelineStartMs,
-                                        hit.clip.endsAtMs(),
-                                    )
-                                    onSelect(hit.clip.id)
-                                    menuRequest = ClipMenuRequest(
-                                        trackId = hit.track.id,
-                                        clipId = hit.clip.id,
-                                        atMs = atMs,
-                                        position = offset,
-                                    )
+        val contentWidthPx = maxOf(
+            viewportWidthPx,
+            (projectDurationMs + 4_000L) * PX_PER_MS,
+        )
+        val contentDurationMs = contentWidthPx / PX_PER_MS
+        val contentHeightPx = maxOf(
+            viewportHeightPx,
+            trackTopOffset + maxOf(1, project.tracks.size) * trackPx,
+        )
+        val maxPanX = max(0f, contentWidthPx - viewportWidthPx)
+        val maxPanY = max(0f, contentHeightPx - viewportHeightPx)
+
+        val currentMaxPanX = rememberUpdatedState(maxPanX)
+        val currentMaxPanY = rememberUpdatedState(maxPanY)
+        val currentViewportWidth = rememberUpdatedState(viewportWidthPx)
+        val currentViewportHeight = rememberUpdatedState(viewportHeightPx)
+        val currentContentDurationMs = rememberUpdatedState(contentDurationMs)
+
+        LaunchedEffect(maxPanX, maxPanY) {
+            panX = panX.coerceIn(0f, maxPanX)
+            panY = panY.coerceIn(0f, maxPanY)
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    val timerScope = CoroutineScope(coroutineContext + SupervisorJob())
+                    try {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            menuRequest = null
+                            val start = down.position
+                            val startPan = Offset(panX, panY)
+                            val startContent = start + startPan
+                            val hit = hitClip(
+                                project = currentProject.value,
+                                contentOffset = startContent,
+                                pxPerMs = PX_PER_MS,
+                                trackPx = trackPx,
+                                trackTopOffset = trackTopOffset,
+                                edgeTouchPx = edgeTouchPx,
+                            )
+
+                            var mode = when {
+                                start.y < rulerPx -> GestureMode.SCRUB
+                                hit?.edge == Edge.LEFT -> GestureMode.TRIM_LEFT
+                                hit?.edge == Edge.RIGHT -> GestureMode.TRIM_RIGHT
+                                hit != null -> GestureMode.PENDING
+                                else -> GestureMode.PAN
+                            }
+                            var activeTrackId = hit?.track?.id
+                            var gestureStarted = false
+                            var menuShown = false
+                            var moved = false
+                            var moveJob: Job? = null
+                            var menuJob: Job? = null
+
+                            fun beginClipGesture(nextMode: GestureMode) {
+                                if (gestureStarted || menuShown || hit == null) return
+                                gestureStarted = true
+                                mode = nextMode
+                                moveJob?.cancel()
+                                menuJob?.cancel()
+                                currentOnSelect.value(hit.clip.id)
+                                currentOnGestureStart.value()
+                            }
+
+                            fun showMenu() {
+                                if (gestureStarted || menuShown || hit == null) return
+                                menuShown = true
+                                mode = GestureMode.MENU
+                                moveJob?.cancel()
+                                menuJob?.cancel()
+                                currentOnSelect.value(hit.clip.id)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val atMs = (startContent.x / PX_PER_MS).toLong().coerceIn(
+                                    hit.clip.timelineStartMs,
+                                    hit.clip.endsAtMs(),
+                                )
+                                menuRequest = ClipMenuRequest(
+                                    trackId = activeTrackId ?: hit.track.id,
+                                    clipId = hit.clip.id,
+                                    atMs = atMs,
+                                    position = start,
+                                )
+                            }
+
+                            fun autoScroll(pointer: Offset) {
+                                if (pointer.x < autoScrollEdgePx) {
+                                    panX = (panX - AUTO_SCROLL_PX_PER_EVENT).coerceAtLeast(0f)
+                                } else if (pointer.x > currentViewportWidth.value - autoScrollEdgePx) {
+                                    panX = (panX + AUTO_SCROLL_PX_PER_EVENT)
+                                        .coerceAtMost(currentMaxPanX.value)
                                 }
-                            },
-                        )
+                                if (pointer.y < rulerPx + autoScrollEdgePx) {
+                                    panY = (panY - AUTO_SCROLL_PX_PER_EVENT).coerceAtLeast(0f)
+                                } else if (pointer.y > currentViewportHeight.value - autoScrollEdgePx) {
+                                    panY = (panY + AUTO_SCROLL_PX_PER_EVENT)
+                                        .coerceAtMost(currentMaxPanY.value)
+                                }
+                            }
+
+                            if (mode == GestureMode.PENDING) {
+                                currentOnSelect.value(hit?.clip?.id)
+                                moveJob = timerScope.launch {
+                                    delay(MOVE_HOLD_MS)
+                                    beginClipGesture(GestureMode.MOVE)
+                                }
+                                menuJob = timerScope.launch {
+                                    delay(MENU_HOLD_MS)
+                                    showMenu()
+                                }
+                            } else if (mode == GestureMode.SCRUB) {
+                                currentOnSeek.value((startContent.x / PX_PER_MS).toLong())
+                            } else if (mode == GestureMode.TRIM_LEFT || mode == GestureMode.TRIM_RIGHT) {
+                                beginClipGesture(mode)
+                            }
+
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+
+                                if ((change.position - start).getDistance() > touchSlop) moved = true
+                                if (mode == GestureMode.PENDING && moved) {
+                                    beginClipGesture(GestureMode.MOVE)
+                                }
+
+                                when (mode) {
+                                    GestureMode.SCRUB -> {
+                                        change.consume()
+                                        val contentX = change.position.x + panX
+                                        currentOnSeek.value(
+                                            (contentX / PX_PER_MS).toLong().coerceIn(
+                                                0L,
+                                                currentContentDurationMs.value.toLong(),
+                                            ),
+                                        )
+                                    }
+                                    GestureMode.PAN -> {
+                                        change.consume()
+                                        panX = (startPan.x - (change.position.x - start.x))
+                                            .coerceIn(0f, currentMaxPanX.value)
+                                        panY = (startPan.y - (change.position.y - start.y))
+                                            .coerceIn(0f, currentMaxPanY.value)
+                                    }
+                                    GestureMode.MOVE,
+                                    GestureMode.TRIM_LEFT,
+                                    GestureMode.TRIM_RIGHT,
+                                    -> {
+                                        change.consume()
+                                        autoScroll(change.position)
+                                        val deltaMs =
+                                            ((change.position.x + panX - startContent.x) / PX_PER_MS).toLong()
+                                        if (hit != null) {
+                                            val sourceTrackId = activeTrackId ?: hit.track.id
+                                            when (mode) {
+                                                GestureMode.MOVE -> {
+                                                    val targetY =
+                                                        change.position.y + panY - trackTopOffset
+                                                    val lastIndex =
+                                                        currentProject.value.tracks.lastIndex.coerceAtLeast(0)
+                                                    val targetIndex = (targetY / trackPx)
+                                                        .toInt()
+                                                        .coerceIn(0, lastIndex)
+                                                    val targetTrack =
+                                                        currentProject.value.tracks.getOrNull(targetIndex)
+                                                    if (targetTrack != null) {
+                                                        currentOnMoveClip.value(
+                                                            sourceTrackId,
+                                                            hit.clip.id,
+                                                            targetTrack.id,
+                                                            hit.clip.timelineStartMs + deltaMs,
+                                                        )
+                                                        activeTrackId = targetTrack.id
+                                                    }
+                                                }
+                                                GestureMode.TRIM_LEFT -> currentOnTrimLeft.value(
+                                                    sourceTrackId,
+                                                    hit.clip.id,
+                                                    hit.clip.sourceInMs + deltaMs,
+                                                )
+                                                GestureMode.TRIM_RIGHT -> currentOnTrimRight.value(
+                                                    sourceTrackId,
+                                                    hit.clip.id,
+                                                    hit.clip.sourceOutMs + deltaMs,
+                                                )
+                                                else -> Unit
+                                            }
+                                        }
+                                    }
+                                    GestureMode.MENU -> change.consume()
+                                    GestureMode.PENDING -> Unit
+                                }
+                            }
+
+                            moveJob?.cancel()
+                            menuJob?.cancel()
+                            if (gestureStarted) currentOnGestureEnd.value()
+                            if (!moved && !menuShown && mode == GestureMode.PENDING) {
+                                currentOnSelect.value(hit?.clip?.id)
+                            }
+                        }
+                    } finally {
+                        timerScope.cancel()
                     }
-                    .pointerInput(pxPerMs, isRecording, liveOffset) {
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                menuRequest = null
-                                val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
-                                if (hit != null) {
-                                    dragState = ClipDrag(hit, offset)
-                                    onSelect(hit.clip.id)
-                                    onGestureStart()
-                                }
-                            },
-                            onDrag = { change, _ ->
-                                val drag = dragState ?: return@detectDragGestures
-                                change.consume()
-                                val hit = drag.hit
-                                val deltaMs = ((change.position.x - drag.startOffset.x) / pxPerMs).toLong()
-                                when (hit.edge) {
-                                    Edge.BODY -> onMove(
-                                        hit.track.id,
-                                        hit.clip.id,
-                                        hit.clip.timelineStartMs + deltaMs,
-                                    )
-                                    Edge.LEFT -> onCrop(
-                                        hit.track.id,
-                                        hit.clip.id,
-                                        minOf(hit.clip.sourceOutMs - 1, hit.clip.sourceInMs + deltaMs)
-                                            .coerceAtLeast(0L),
-                                        hit.clip.sourceOutMs,
-                                    )
-                                    Edge.RIGHT -> onCrop(
-                                        hit.track.id,
-                                        hit.clip.id,
-                                        hit.clip.sourceInMs,
-                                        maxOf(hit.clip.sourceInMs + 1, hit.clip.sourceOutMs + deltaMs),
-                                    )
-                                }
-                            },
-                            onDragEnd = {
-                                dragState = null
-                                onGestureEnd()
-                            },
-                            onDragCancel = {
-                                dragState = null
-                                onGestureEnd()
-                            },
-                        )
-                    },
-            ) {
-                val heightPx = size.height
-
-                val stepMs = when {
-                    pxPerMs * 1_000 < 40 -> 10_000L
-                    pxPerMs * 1_000 < 90 -> 5_000L
-                    pxPerMs * 1_000 < 180 -> 2_000L
-                    else -> 1_000L
-                }
-                var tick = 0L
-                while (tick <= durationMs) {
-                    val x = tick * pxPerMs
-                    drawLine(
-                        color = colors.outlineVariant.copy(alpha = 0.5f),
-                        start = Offset(x, 0f),
-                        end = Offset(x, heightPx),
-                        strokeWidth = 1f,
-                    )
-                    tick += stepMs
-                }
+                },
+        ) {
+            translate(left = -panX, top = -panY) {
+                drawRuler(
+                    colors = colors,
+                    rulerPx = rulerPx,
+                    width = contentWidthPx,
+                    height = contentHeightPx,
+                    pxPerMs = PX_PER_MS,
+                    visibleLeft = panX,
+                    visibleRight = panX + viewportWidthPx,
+                )
 
                 if (isRecording) {
                     drawRect(
                         color = colors.errorContainer.copy(alpha = 0.35f),
-                        topLeft = Offset(0f, 0f),
-                        size = Size(size.width, trackPx),
+                        topLeft = Offset(0f, rulerPx),
+                        size = Size(contentWidthPx, trackPx),
                     )
-                    drawLiveWaveform(recordingWaveform, size.width, trackPx, colors.error)
-                    val recordX = (recordingElapsedMs * pxPerMs).coerceIn(0f, size.width)
+                    drawLiveWaveform(
+                        values = recordingWaveform,
+                        width = contentWidthPx,
+                        top = rulerPx,
+                        height = trackPx,
+                        color = colors.error,
+                    )
+                    val recordX = (recordingElapsedMs * PX_PER_MS).coerceIn(0f, contentWidthPx)
                     drawLine(
                         color = colors.error,
-                        start = Offset(recordX, 0f),
-                        end = Offset(recordX, heightPx),
+                        start = Offset(recordX, rulerPx),
+                        end = Offset(recordX, contentHeightPx),
                         strokeWidth = 2f,
                     )
                 }
 
                 project.tracks.forEachIndexed { index, track ->
-                    val top = liveOffset + index * trackPx
+                    val top = trackTopOffset + index * trackPx
                     drawLine(
                         color = colors.outlineVariant,
                         start = Offset(0f, top),
-                        end = Offset(size.width, top),
+                        end = Offset(contentWidthPx, top),
                         strokeWidth = 1f,
                     )
                     track.clips.forEach { clip ->
-                        val left = clip.timelineStartMs * pxPerMs
-                        val width = clip.durationMs * pxPerMs
+                        val left = clip.timelineStartMs * PX_PER_MS
+                        val width = clip.durationMs * PX_PER_MS
                         val selected = clip.id == selectedClipId
                         drawRect(
                             color = if (selected) colors.primaryContainer else colors.surfaceVariant,
@@ -248,81 +412,102 @@ fun Timeline(
                             style = Stroke(width = if (selected) 2f else 1f),
                         )
                         if (selected) {
-                            val handleWidth = with(density) { 4.dp.toPx() }
-                            val handleTop = top + 12f
-                            val handleBottom = top + trackPx - 12f
+                            val handleTop = top + 10f
+                            val handleBottom = top + trackPx - 10f
                             drawLine(
                                 color = colors.primary,
-                                start = Offset(left + handleWidth / 2f, handleTop),
-                                end = Offset(left + handleWidth / 2f, handleBottom),
-                                strokeWidth = handleWidth,
+                                start = Offset(left + handleWidthPx / 2f, handleTop),
+                                end = Offset(left + handleWidthPx / 2f, handleBottom),
+                                strokeWidth = handleWidthPx,
                             )
                             drawLine(
                                 color = colors.primary,
-                                start = Offset(left + width - handleWidth / 2f, handleTop),
-                                end = Offset(left + width - handleWidth / 2f, handleBottom),
-                                strokeWidth = handleWidth,
+                                start = Offset(left + width - handleWidthPx / 2f, handleTop),
+                                end = Offset(left + width - handleWidthPx / 2f, handleBottom),
+                                strokeWidth = handleWidthPx,
                             )
                         }
 
                         val peak = peaks[clip.sourceId]
-                        if (peak != null) {
-                            drawWaveform(peak, clip, width.toInt(), left, top, trackPx, colors.primary)
+                        if (peak != null && width > 0f) {
+                            drawWaveform(
+                                peaks = peak,
+                                clip = clip,
+                                barCount = max(1, width.toInt()),
+                                left = left,
+                                trackTop = top,
+                                trackPx = trackPx,
+                                color = colors.primary,
+                                visibleLeft = panX,
+                                visibleRight = panX + viewportWidthPx,
+                            )
                         }
                     }
                 }
 
-                val playheadX = playheadMs * pxPerMs
+                val playheadX = playheadMs * PX_PER_MS
                 drawLine(
                     color = colors.error,
-                    start = Offset(playheadX, liveOffset),
-                    end = Offset(playheadX, heightPx),
+                    start = Offset(playheadX, rulerPx),
+                    end = Offset(playheadX, contentHeightPx),
                     strokeWidth = if (isRecording) 1f else 2f,
                 )
             }
 
-            menuRequest?.let { request ->
-                val menuWidth = 220.dp
-                val menuHeight = 168.dp
-                val x = with(density) { request.position.x.toDp() }
-                    .coerceAtMost(maxWidth - menuWidth - 8.dp)
-                    .coerceAtLeast(8.dp)
-                val y = with(density) { request.position.y.toDp() }
-                    .coerceAtMost(maxHeight - menuHeight - 8.dp)
-                    .coerceAtLeast(8.dp)
+            drawScrollIndicators(
+                colors = colors,
+                panX = panX,
+                panY = panY,
+                viewportWidth = viewportWidthPx,
+                viewportHeight = viewportHeightPx,
+                contentWidth = contentWidthPx,
+                contentHeight = contentHeightPx,
+                maxPanX = maxPanX,
+                maxPanY = maxPanY,
+            )
+        }
 
-                DropdownMenu(
-                    expanded = true,
-                    onDismissRequest = { menuRequest = null },
-                    offset = DpOffset(x, y),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, colors.outlineVariant),
-                ) {
-                    ClipMenuItem(
-                        icon = Icons.Filled.Delete,
-                        label = stringResource(R.string.menu_delete),
-                        onClick = {
-                            onDeleteClip(request.trackId, request.clipId)
-                            menuRequest = null
-                        },
-                    )
-                    ClipMenuItem(
-                        icon = Icons.Filled.ContentCut,
-                        label = stringResource(R.string.menu_split),
-                        onClick = {
-                            onSplitClip(request.trackId, request.clipId, request.atMs)
-                            menuRequest = null
-                        },
-                    )
-                    ClipMenuItem(
-                        icon = Icons.Filled.FilterAlt,
-                        label = stringResource(R.string.menu_noise_reduction),
-                        onClick = {
-                            onReduceNoiseForTrack(request.trackId)
-                            menuRequest = null
-                        },
-                    )
-                }
+        menuRequest?.let { request ->
+            val menuWidth = 220.dp
+            val menuHeight = 168.dp
+            val x = with(density) { request.position.x.toDp() }
+                .coerceAtMost(maxWidth - menuWidth - 8.dp)
+                .coerceAtLeast(8.dp)
+            val y = with(density) { request.position.y.toDp() }
+                .coerceAtMost(maxHeight - menuHeight - 8.dp)
+                .coerceAtLeast(8.dp)
+
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { menuRequest = null },
+                offset = DpOffset(x, y),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, colors.outlineVariant),
+            ) {
+                ClipMenuItem(
+                    icon = Icons.Filled.Delete,
+                    label = stringResource(R.string.menu_delete),
+                    onClick = {
+                        onDeleteClip(request.trackId, request.clipId)
+                        menuRequest = null
+                    },
+                )
+                ClipMenuItem(
+                    icon = Icons.Filled.ContentCut,
+                    label = stringResource(R.string.menu_split),
+                    onClick = {
+                        onSplitClip(request.trackId, request.clipId, request.atMs)
+                        menuRequest = null
+                    },
+                )
+                ClipMenuItem(
+                    icon = Icons.Filled.FilterAlt,
+                    label = stringResource(R.string.menu_noise_reduction),
+                    onClick = {
+                        onReduceNoiseForTrack(request.trackId)
+                        menuRequest = null
+                    },
+                )
             }
         }
     }
@@ -341,34 +526,119 @@ private fun ClipMenuItem(
     )
 }
 
-private class SlowLongPressViewConfiguration(
-    delegate: ViewConfiguration,
-    override val longPressTimeoutMillis: Long = LONG_PRESS_TIMEOUT_MS,
-) : ViewConfiguration by delegate
+private fun DrawScope.drawRuler(
+    colors: ColorScheme,
+    rulerPx: Float,
+    width: Float,
+    height: Float,
+    pxPerMs: Float,
+    visibleLeft: Float,
+    visibleRight: Float,
+) {
+    drawRect(
+        color = colors.surfaceVariant,
+        topLeft = Offset.Zero,
+        size = Size(width, rulerPx),
+    )
+    val stepMs = when {
+        pxPerMs * 1_000 < 40 -> 10_000L
+        pxPerMs * 1_000 < 90 -> 5_000L
+        pxPerMs * 1_000 < 180 -> 2_000L
+        else -> 1_000L
+    }
+    var tick = maxOf(0L, ((visibleLeft / pxPerMs).toLong() / stepMs) * stepMs)
+    while (tick * pxPerMs <= visibleRight) {
+        val x = tick * pxPerMs
+        drawLine(
+            color = colors.outlineVariant.copy(alpha = 0.5f),
+            start = Offset(x, 0f),
+            end = Offset(x, height),
+            strokeWidth = 1f,
+        )
+        drawLine(
+            color = colors.outline,
+            start = Offset(x, rulerPx - 8f),
+            end = Offset(x, rulerPx),
+            strokeWidth = 1f,
+        )
+        tick += stepMs
+    }
+    drawLine(
+        color = colors.outline,
+        start = Offset(0f, rulerPx),
+        end = Offset(width, rulerPx),
+        strokeWidth = 1f,
+    )
+}
+
+private fun DrawScope.drawScrollIndicators(
+    colors: ColorScheme,
+    panX: Float,
+    panY: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    contentWidth: Float,
+    contentHeight: Float,
+    maxPanX: Float,
+    maxPanY: Float,
+) {
+    val thumbColor = colors.onSurface.copy(alpha = 0.24f)
+    if (maxPanX > 0f) {
+        val thumbWidth = max(32f, viewportWidth * viewportWidth / contentWidth)
+        val thumbX = (panX / maxPanX) * (viewportWidth - thumbWidth)
+        drawRoundRect(
+            color = thumbColor,
+            topLeft = Offset(thumbX, viewportHeight - 5f),
+            size = Size(thumbWidth, 3f),
+            cornerRadius = CornerRadius(2f),
+        )
+    }
+    if (maxPanY > 0f) {
+        val thumbHeight = max(32f, viewportHeight * viewportHeight / contentHeight)
+        val thumbY = (panY / maxPanY) * (viewportHeight - thumbHeight)
+        drawRoundRect(
+            color = thumbColor,
+            topLeft = Offset(viewportWidth - 5f, thumbY),
+            size = Size(3f, thumbHeight),
+            cornerRadius = CornerRadius(2f),
+        )
+    }
+}
 
 private fun hitClip(
     project: Project,
-    offset: Offset,
+    contentOffset: Offset,
     pxPerMs: Float,
     trackPx: Float,
-    topOffset: Float,
+    trackTopOffset: Float,
+    edgeTouchPx: Float,
 ): ClipHit? {
-    val trackIndex = ((offset.y - topOffset) / trackPx).toInt()
-    if (trackIndex !in project.tracks.indices) return null
-    val track = project.tracks[trackIndex]
-    val edgeWidth = 16f
+    if (contentOffset.y < trackTopOffset ||
+        contentOffset.y >= trackTopOffset + project.tracks.size * trackPx
+    ) {
+        return null
+    }
+    val trackIndex = ((contentOffset.y - trackTopOffset) / trackPx).toInt()
+    val track = project.tracks.getOrNull(trackIndex) ?: return null
 
     track.clips.forEach { clip ->
         val left = clip.timelineStartMs * pxPerMs
         val right = left + clip.durationMs * pxPerMs
-        if (offset.x in left..right) {
-            val edge = when {
-                offset.x - left < edgeWidth -> Edge.LEFT
-                right - offset.x < edgeWidth -> Edge.RIGHT
-                else -> Edge.BODY
-            }
-            return ClipHit(track, clip, edge)
+        val width = right - left
+        val tolerance = min(edgeTouchPx, max(12f, width / 2f))
+        val nearLeft = abs(contentOffset.x - left) <= tolerance
+        val nearRight = abs(contentOffset.x - right) <= tolerance
+        val inside = contentOffset.x in left..right
+        if (!inside && !nearLeft && !nearRight) return@forEach
+
+        val edge = when {
+            nearLeft && (!nearRight ||
+                abs(contentOffset.x - left) <= abs(contentOffset.x - right)) -> Edge.LEFT
+            nearRight -> Edge.RIGHT
+            inside -> Edge.BODY
+            else -> return@forEach
         }
+        return ClipHit(track, clip, edge)
     }
     return null
 }
@@ -376,10 +646,11 @@ private fun hitClip(
 private fun DrawScope.drawLiveWaveform(
     values: List<Float>,
     width: Float,
+    top: Float,
     height: Float,
     color: Color,
 ) {
-    val center = height / 2f
+    val center = top + height / 2f
     val amplitude = (height - 12f) / 2f
     if (values.isEmpty()) {
         drawLine(
@@ -411,6 +682,8 @@ private fun DrawScope.drawWaveform(
     trackTop: Float,
     trackPx: Float,
     color: Color,
+    visibleLeft: Float,
+    visibleRight: Float,
 ) {
     val count = barCount.coerceAtLeast(1)
     val sourceFrames = peaks.frameCount
@@ -424,8 +697,11 @@ private fun DrawScope.drawWaveform(
     val level = peaks.levelFor(max(1, (toFrame - fromFrame) / count))
     val center = trackTop + trackPx / 2f
     val amplitude = (trackPx - 12f) / 2f
+    val width = (clip.durationMs * PX_PER_MS).coerceAtLeast(1f)
+    val firstBar = max(0, ((visibleLeft - left) * count / width).toInt())
+    val lastBar = min(count - 1, ((visibleRight - left) * count / width).toInt())
 
-    for (x in 0 until count) {
+    for (x in firstBar..lastBar) {
         val frameStart = fromFrame + ((toFrame - fromFrame).toLong() * x / count).toInt()
         val frameEnd = fromFrame + ((toFrame - fromFrame).toLong() * (x + 1) / count).toInt()
         val bucketStart = frameStart / level.samplesPerBucket
