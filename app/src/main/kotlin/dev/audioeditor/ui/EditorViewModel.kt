@@ -53,13 +53,24 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _isWorking = MutableStateFlow(false)
     val isWorking: StateFlow<Boolean> = _isWorking.asStateFlow()
 
+    val recordingWaveform: StateFlow<List<Float>> = recorder.waveform
+    val recordingElapsedMs: StateFlow<Long> = recorder.elapsedMs
+
     val player = ProjectPlayer()
     val playheadMs: StateFlow<Long> = player.playheadMs
     val isPlaying: StateFlow<Boolean> = player.isPlaying
 
     private var gestureBase: Project? = null
-    private var noiseProfile: Pair<String, NoiseProfile>? = null
+    private var capturedNoise: CapturedNoise? = null
     private var sourceIdForRecording: String? = null
+
+    enum class NoiseScope { CURRENT_TRACK, ALL_TRACKS }
+
+    private data class CapturedNoise(
+        val sourceId: String,
+        val trackId: String,
+        val profile: NoiseProfile,
+    )
 
     init {
         val loaded = _peaks.value.toMutableMap()
@@ -230,10 +241,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (base != null && base != _project.value) commit(_project.value)
     }
 
-    fun splitAtPlayhead() {
-        val selected = selectedClip() ?: return
-        commit(ProjectEdits.split(_project.value, selected.first.id, selected.second.id, playheadMs.value))
-        _status.value = "Split at ${playheadMs.value / 1_000}.${playheadMs.value % 1_000 / 100}s"
+    fun splitClip(trackId: String, clipId: String, atMs: Long) {
+        commit(ProjectEdits.split(_project.value, trackId, clipId, atMs))
+        _status.value = "Split at ${atMs / 1_000}.${atMs % 1_000 / 100}s"
     }
 
     fun captureNoiseProfile() {
@@ -252,7 +262,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         (clip.sourceOutMs * buffer.sampleRate / 1_000L).toInt(),
                     )
                 }
-                noiseProfile = source.id to profile
+                capturedNoise = CapturedNoise(source.id, selected.first.id, profile)
                 _status.value = "Noise profile captured from ${clip.durationMs} ms"
             } catch (e: Exception) {
                 _status.value = "Could not capture noise: ${e.message ?: "unknown error"}"
@@ -262,12 +272,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun reduceNoise() {
-        val (sourceId, profile) = noiseProfile ?: run {
+    fun reduceNoise(scope: NoiseScope) {
+        val captured = capturedNoise ?: run {
             _status.value = "Capture a noise profile first"
             return
         }
-        val source = ProjectOps.sourceById(_project.value, sourceId) ?: return
+        val source = ProjectOps.sourceById(_project.value, captured.sourceId) ?: return
         val projectId = _project.value.id
         val newId = newId()
         viewModelScope.launch {
@@ -276,22 +286,30 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val denoised = NoiseProcessor.denoise(
                     source = source,
-                    profile = profile,
+                    profile = captured.profile,
                     wavFile = store.sourceFile(projectId, newId),
                     peaksFile = store.peaksFile(projectId, newId),
                 )
                 val current = _project.value
                 val tracks = current.tracks.map { track ->
-                    track.copy(clips = track.clips.map { clip ->
-                        if (clip.sourceId == sourceId) clip.copy(sourceId = denoised.id) else clip
-                    })
+                    if (scope == NoiseScope.CURRENT_TRACK && track.id != captured.trackId) {
+                        track
+                    } else {
+                        track.copy(clips = track.clips.map { clip ->
+                            if (clip.sourceId == captured.sourceId) {
+                                clip.copy(sourceId = denoised.id)
+                            } else {
+                                clip
+                            }
+                        })
+                    }
                 }
                 commit(ProjectOps.addSource(current, denoised).copy(tracks = tracks))
                 _peaks.value = _peaks.value + (denoised.id to PeakPyramid.read(
                     File(denoised.peaksPath!!).inputStream(),
                 ))
-                noiseProfile = null
-                _status.value = "Noise reduced"
+                capturedNoise = null
+                _status.value = "Noise reduced (${if (scope == NoiseScope.CURRENT_TRACK) "current track" else "all tracks"})"
             } catch (e: Exception) {
                 _status.value = "Noise reduction failed: ${e.message ?: "unknown error"}"
             } finally {
