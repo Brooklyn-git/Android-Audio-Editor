@@ -18,6 +18,8 @@ class WavFileWriter(
     private val output = RandomAccessFile(file, "rw")
     private var framesWritten = 0L
 
+    val frameCount: Long get() = framesWritten
+
     init {
         require(sampleRate > 0 && channels > 0)
         output.setLength(0)
