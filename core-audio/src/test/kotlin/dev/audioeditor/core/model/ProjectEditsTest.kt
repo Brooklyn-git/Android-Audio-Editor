@@ -92,8 +92,9 @@ class ProjectEditsTest {
         val moved = ProjectEdits.moveToTrack(withTwoTracks, "t1", "c1", "t2", 9_000L)
 
         assertEquals(0, moved.tracks[0].clips.size)
-        assertEquals(listOf("c2", "c1"), moved.tracks[1].clips.map { it.id })
-        assertEquals(9_000L, moved.tracks[1].clips[1].timelineStartMs)
+        assertEquals(listOf("c1", "c2"), moved.tracks[1].clips.map { it.id })
+        assertEquals(9_000L, moved.tracks[1].clips[0].timelineStartMs)
+        assertEquals(13_000L, moved.tracks[1].clips[1].timelineStartMs)
         assertEquals(1, withTwoTracks.tracks[0].clips.size)
     }
 
@@ -110,6 +111,88 @@ class ProjectEditsTest {
         assertEquals(0, second.tracks[1].clips.size)
         assertEquals(listOf("c1"), second.tracks[2].clips.map { it.id })
         assertEquals(8_000L, second.tracks[2].clips[0].timelineStartMs)
+    }
+
+    @Test
+    fun movePushesOverlappingClipsToTheRight() {
+        val (project, _) = adjacentClips()
+
+        val moved = ProjectEdits.moveToTrack(project, "t1", "a", "t1", 2_000L)
+        val clips = moved.tracks[0].clips.sortedBy { it.timelineStartMs }
+
+        assertEquals(listOf("a", "b"), clips.map { it.id })
+        assertEquals(2_000L, clips[0].timelineStartMs)
+        assertEquals(6_000L, clips[1].timelineStartMs)
+    }
+
+    @Test
+    fun moveLeftPushesEarlierClipToTheRight() {
+        val (project, _) = adjacentClips()
+
+        val moved = ProjectEdits.moveToTrack(project, "t1", "b", "t1", 1_000L)
+        val clips = moved.tracks[0].clips.sortedBy { it.timelineStartMs }
+
+        assertEquals(listOf("b", "a"), clips.map { it.id })
+        assertEquals(1_000L, clips[0].timelineStartMs)
+        assertEquals(5_000L, clips[1].timelineStartMs)
+    }
+
+    @Test
+    fun movePushesAllFollowingClipsWhenTheyCascade() {
+        val longSource = source.copy(durationMs = 20_000L)
+        val clips = listOf(
+            Clip("a", "s1", 0L, 4_000L, 0L),
+            Clip("b", "s1", 4_000L, 8_000L, 4_000L),
+            Clip("c", "s1", 8_000L, 12_000L, 8_000L),
+        )
+        val threeClips = Project(
+            sources = listOf(longSource),
+            tracks = listOf(Track("t1", "Track 1", clips)),
+        )
+
+        val moved = ProjectEdits.moveToTrack(threeClips, "t1", "a", "t1", 3_000L)
+        val result = moved.tracks[0].clips.sortedBy { it.timelineStartMs }
+
+        assertEquals(listOf(3_000L, 7_000L, 11_000L), result.map { it.timelineStartMs })
+    }
+
+    @Test
+    fun movingBackToOriginalPositionRestoresTheTrack() {
+        val (project, _) = adjacentClips()
+
+        val away = ProjectEdits.moveToTrack(project, "t1", "a", "t1", 2_000L)
+        val back = ProjectEdits.moveToTrack(project, "t1", "a", "t1", 0L)
+
+        assertTrue(away != project)
+        assertEquals(project, back)
+    }
+
+    @Test
+    fun moveToAnotherTrackPushesItsOverlappingClip() {
+        val (project, clips) = adjacentClips()
+        val twoTracks = project.copy(
+            tracks = listOf(
+                Track("t1", "Track 1", listOf(clips[0])),
+                Track("t2", "Track 2", listOf(clips[1])),
+            ),
+        )
+
+        val moved = ProjectEdits.moveToTrack(twoTracks, "t1", "a", "t2", 2_000L)
+
+        assertEquals(0, moved.tracks[0].clips.size)
+        assertEquals(listOf("a", "b"), moved.tracks[1].clips.map { it.id })
+        assertEquals(listOf(2_000L, 6_000L), moved.tracks[1].clips.map { it.timelineStartMs })
+    }
+
+    @Test
+    fun trimRightPushesTheFollowingClip() {
+        val (project, _) = adjacentClips()
+
+        val trimmed = ProjectEdits.trimRight(project, "t1", "a", 6_000L)
+        val clips = trimmed.tracks[0].clips.sortedBy { it.timelineStartMs }
+
+        assertEquals(listOf(0L, 6_000L), clips.map { it.timelineStartMs })
+        assertEquals(6_000L, clips[0].sourceOutMs)
     }
 
     @Test
@@ -146,5 +229,15 @@ class ProjectEditsTest {
     @Test(expected = IllegalStateException::class)
     fun deleteClipRejectsUnknownClip() {
         ProjectEdits.deleteClip(project, "t1", "missing")
+    }
+
+    private fun adjacentClips(): Pair<Project, List<Clip>> {
+        val first = Clip("a", "s1", 0L, 4_000L, 0L)
+        val second = Clip("b", "s1", 4_000L, 8_000L, 4_000L)
+        val project = Project(
+            sources = listOf(source),
+            tracks = listOf(Track("t1", "Track 1", listOf(first, second))),
+        )
+        return project to listOf(first, second)
     }
 }

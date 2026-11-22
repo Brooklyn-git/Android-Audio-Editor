@@ -31,11 +31,9 @@ object ProjectEdits {
         val newIn = sourceInMs.coerceIn(minIn, maxIn)
         if (newIn == clip.sourceInMs) return project
         val newStart = clip.timelineStartMs + newIn - clip.sourceInMs
-        return ProjectOps.replaceClip(
-            project,
-            trackId,
-            clip.copy(sourceInMs = newIn, timelineStartMs = newStart),
-        )
+        val track = ProjectOps.trackById(project, trackId) ?: return project
+        val trimmed = clip.copy(sourceInMs = newIn, timelineStartMs = newStart)
+        return ProjectOps.replaceTrack(project, track.copy(clips = placeWithoutOverlap(track.clips, trimmed)))
     }
 
     /** Trims the right edge to a source time, clamped to the source bounds. */
@@ -46,7 +44,9 @@ object ProjectEdits {
             sourceDuration(project, clip),
         )
         if (newOut == clip.sourceOutMs) return project
-        return ProjectOps.replaceClip(project, trackId, clip.copy(sourceOutMs = newOut))
+        val track = ProjectOps.trackById(project, trackId) ?: return project
+        val trimmed = clip.copy(sourceOutMs = newOut)
+        return ProjectOps.replaceTrack(project, track.copy(clips = placeWithoutOverlap(track.clips, trimmed)))
     }
 
     /** Removes a clip from its track without touching the underlying source file. */
@@ -81,7 +81,7 @@ object ProjectEdits {
         val withoutClip = ProjectOps.removeClip(project, actualTrackId, clipId)
         val targetAfterRemoval = ProjectOps.trackById(withoutClip, targetTrackId) ?: return project
         val updatedTarget = targetAfterRemoval.copy(
-            clips = (targetAfterRemoval.clips + moved).sortedBy { it.timelineStartMs },
+            clips = placeWithoutOverlap(targetAfterRemoval.clips, moved),
         )
         return ProjectOps.replaceTrack(withoutClip, updatedTarget)
     }
@@ -106,6 +106,37 @@ object ProjectEdits {
         clips[index] = left.copy(fadeOutMs = 0L)
         clips.add(index + 1, right)
         return ProjectOps.replaceTrack(project, track.copy(clips = clips))
+    }
+
+    /**
+     * Puts [moving] at its requested timeline position and shifts stationary
+     * clips that overlap it (or are pushed into by them) to the right.
+     * Clips before the moving clip keep their positions unless they already
+     * overlapped each other.
+     */
+    private fun placeWithoutOverlap(clips: List<Clip>, moving: Clip): List<Clip> {
+        val stationary = clips.filterNot { it.id == moving.id }
+            .sortedBy { it.timelineStartMs }
+        val result = mutableListOf<Clip>()
+
+        var leftCursor = 0L
+        stationary.filter { it.endsAtMs() <= moving.timelineStartMs }
+            .forEach { clip ->
+                val start = maxOf(clip.timelineStartMs, leftCursor)
+                result += clip.copy(timelineStartMs = start)
+                leftCursor = start + clip.durationMs
+            }
+
+        result += moving
+
+        var rightCursor = moving.endsAtMs()
+        stationary.filter { it.endsAtMs() > moving.timelineStartMs }
+            .forEach { clip ->
+                val start = maxOf(clip.timelineStartMs, rightCursor)
+                result += clip.copy(timelineStartMs = start)
+                rightCursor = start + clip.durationMs
+            }
+        return result
     }
 
     private fun requireClip(project: Project, trackId: String, clipId: String): Clip =
