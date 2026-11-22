@@ -11,6 +11,8 @@ AOSP media APIs. No FFmpeg or proprietary SDKs are used.
 - Trim clips by dragging either edge; trimmed audio can be restored up to the
   source duration, and selected clips show resize stripes
 - Drag clips along the timeline or onto another track, undo/redo
+- Clips on the same track are pushed apart so they never overlap; place audio on
+  different tracks when overlap is wanted
 - Fixed timeline zoom with horizontal/vertical panning by dragging empty space,
   so many tracks keep a readable fixed height
 - Hold a clip for a menu with **Delete**, **Split**, and **Noise Reduction**

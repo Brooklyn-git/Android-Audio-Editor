@@ -58,5 +58,5 @@
 
     <string name="time_current_of_total">%1$s / %2$s</string>
     <string name="selected_range">Selected: %1$s–%2$s</string>
-    <string name="tip_timeline">Tip: drag empty space to scroll; drag the ruler to scrub. Drag a clip to move it along the timeline or onto another track. Drag the stripes at its edges to trim or extend it. Hold a clip for the menu. Crop to a noise-only passage, tap Get noise, then reduce noise.</string>
+    <string name="tip_timeline">Tip: drag empty space to scroll; drag the ruler to scrub. Drag a clip to move it along the timeline or onto another track. Clips on the same track are pushed apart so they never overlap; use another track for overlapping audio. Drag the stripes at a clip\'s edges to trim or extend it. Hold a clip for the menu.</string>
 </resources>
