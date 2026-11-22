@@ -1,5 +1,6 @@
 package dev.audioeditor.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -7,7 +8,16 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -20,12 +30,16 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.ViewConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import dev.audioeditor.R
 import dev.audioeditor.core.model.Clip
 import dev.audioeditor.core.model.Project
 import dev.audioeditor.core.model.ProjectOps
@@ -38,6 +52,13 @@ import kotlin.math.min
 
 private data class ClipHit(val track: Track, val clip: Clip, val edge: Edge)
 private data class ClipDrag(val hit: ClipHit, val startOffset: Offset)
+private data class ClipMenuRequest(
+    val trackId: String,
+    val clipId: String,
+    val atMs: Long,
+    val position: Offset,
+)
+
 private enum class Edge { BODY, LEFT, RIGHT }
 
 private const val LONG_PRESS_TIMEOUT_MS = 900L
@@ -54,7 +75,9 @@ fun Timeline(
     trackHeight: Dp = 96.dp,
     onSelect: (String?) -> Unit,
     onSeek: (Long) -> Unit,
-    onLongPress: (trackId: String, clipId: String, atMs: Long) -> Unit,
+    onDeleteClip: (trackId: String, clipId: String) -> Unit,
+    onSplitClip: (trackId: String, clipId: String, atMs: Long) -> Unit,
+    onReduceNoiseForTrack: (trackId: String) -> Unit,
     onGestureStart: () -> Unit,
     onMove: (trackId: String, clipId: String, startMs: Long) -> Unit,
     onCrop: (trackId: String, clipId: String, sourceInMs: Long, sourceOutMs: Long) -> Unit,
@@ -63,6 +86,7 @@ fun Timeline(
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
     var dragState by remember { mutableStateOf<ClipDrag?>(null) }
+    var menuRequest by remember { mutableStateOf<ClipMenuRequest?>(null) }
     val currentProject = remember { mutableStateOf(project) }
     currentProject.value = project
 
@@ -92,6 +116,7 @@ fun Timeline(
                     .pointerInput(pxPerMs, isRecording, liveOffset) {
                         detectTapGestures(
                             onTap = { offset ->
+                                menuRequest = null
                                 val timeMs = (offset.x / pxPerMs).toLong().coerceIn(0L, durationMs)
                                 onSeek(timeMs)
                                 val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
@@ -105,7 +130,12 @@ fun Timeline(
                                         hit.clip.endsAtMs(),
                                     )
                                     onSelect(hit.clip.id)
-                                    onLongPress(hit.track.id, hit.clip.id, atMs)
+                                    menuRequest = ClipMenuRequest(
+                                        trackId = hit.track.id,
+                                        clipId = hit.clip.id,
+                                        atMs = atMs,
+                                        position = offset,
+                                    )
                                 }
                             },
                         )
@@ -113,6 +143,7 @@ fun Timeline(
                     .pointerInput(pxPerMs, isRecording, liveOffset) {
                         detectDragGestures(
                             onDragStart = { offset ->
+                                menuRequest = null
                                 val hit = hitClip(currentProject.value, offset, pxPerMs, trackPx, liveOffset)
                                 if (hit != null) {
                                     dragState = ClipDrag(hit, offset)
@@ -249,8 +280,65 @@ fun Timeline(
                     strokeWidth = if (isRecording) 1f else 2f,
                 )
             }
+
+            menuRequest?.let { request ->
+                val menuWidth = 220.dp
+                val menuHeight = 168.dp
+                val x = with(density) { request.position.x.toDp() }
+                    .coerceAtMost(maxWidth - menuWidth - 8.dp)
+                    .coerceAtLeast(8.dp)
+                val y = with(density) { request.position.y.toDp() }
+                    .coerceAtMost(maxHeight - menuHeight - 8.dp)
+                    .coerceAtLeast(8.dp)
+
+                DropdownMenu(
+                    expanded = true,
+                    onDismissRequest = { menuRequest = null },
+                    offset = DpOffset(x, y),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, colors.outlineVariant),
+                ) {
+                    ClipMenuItem(
+                        icon = Icons.Filled.Delete,
+                        label = stringResource(R.string.menu_delete),
+                        onClick = {
+                            onDeleteClip(request.trackId, request.clipId)
+                            menuRequest = null
+                        },
+                    )
+                    ClipMenuItem(
+                        icon = Icons.Filled.ContentCut,
+                        label = stringResource(R.string.menu_split),
+                        onClick = {
+                            onSplitClip(request.trackId, request.clipId, request.atMs)
+                            menuRequest = null
+                        },
+                    )
+                    ClipMenuItem(
+                        icon = Icons.Filled.FilterAlt,
+                        label = stringResource(R.string.menu_noise_reduction),
+                        onClick = {
+                            onReduceNoiseForTrack(request.trackId)
+                            menuRequest = null
+                        },
+                    )
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ClipMenuItem(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        leadingIcon = { Icon(icon, contentDescription = null) },
+        onClick = onClick,
+    )
 }
 
 private class SlowLongPressViewConfiguration(

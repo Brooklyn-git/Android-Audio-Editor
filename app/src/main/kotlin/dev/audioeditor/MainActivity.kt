@@ -9,14 +9,28 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -31,11 +45,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.audioeditor.R
 import dev.audioeditor.core.model.ProjectOps
 import dev.audioeditor.ui.EditorViewModel
 import dev.audioeditor.ui.Timeline
+import dev.audioeditor.ui.formatTime
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,7 +80,6 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
     val recordingWaveform by viewModel.recordingWaveform.collectAsState()
     val recordingElapsedMs by viewModel.recordingElapsedMs.collectAsState()
 
-    var splitRequest by remember { mutableStateOf<SplitRequest?>(null) }
     var showNoiseScopeDialog by remember { mutableStateOf(false) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -79,20 +96,33 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
     val selectedClip = project.tracks.firstNotNullOfOrNull { track ->
         track.clips.firstOrNull { it.id == selectedId }
     }
+    val statusText = when {
+        isRecording -> stringResource(R.string.status_recording, formatTime(recordingElapsedMs))
+        isWorking -> stringResource(R.string.status_working, status)
+        else -> status
+    }
+    val timeText = stringResource(
+        R.string.time_current_of_total,
+        formatTime(playheadMs),
+        formatTime(durationMs),
+    )
+    val selectedText = selectedClip?.let {
+        stringResource(R.string.selected_range, formatTime(it.sourceInMs), formatTime(it.sourceOutMs))
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Audio Editor") },
+                title = { Text(stringResource(R.string.app_name)) },
                 actions = {
                     TextButton(onClick = { importLauncher.launch(arrayOf("audio/*")) }) {
-                        Text("Import")
+                        IconedLabel(Icons.Filled.Upload, stringResource(R.string.action_import))
                     }
                     TextButton(
                         onClick = { exportLauncher.launch("audio-editor.wav") },
                         enabled = durationMs > 0 && !isWorking,
                     ) {
-                        Text("Export")
+                        IconedLabel(Icons.Filled.Download, stringResource(R.string.action_export))
                     }
                 },
             )
@@ -112,7 +142,11 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Button(onClick = { viewModel.togglePlayback() }, enabled = durationMs > 0) {
-                    Text(if (isPlaying) "Pause" else "Play")
+                    val icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow
+                    val label = stringResource(
+                        if (isPlaying) R.string.action_pause else R.string.action_play,
+                    )
+                    IconedLabel(icon, label)
                 }
                 Button(
                     onClick = {
@@ -126,7 +160,11 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                     },
                     enabled = !isWorking,
                 ) {
-                    Text(if (isRecording) "Stop" else "Record")
+                    val icon = if (isRecording) Icons.Filled.Stop else Icons.Filled.Mic
+                    val label = stringResource(
+                        if (isRecording) R.string.action_stop else R.string.action_record,
+                    )
+                    IconedLabel(icon, label)
                 }
             }
 
@@ -134,8 +172,12 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
-                OutlinedButton(onClick = { viewModel.undo() }) { Text("Undo") }
-                OutlinedButton(onClick = { viewModel.redo() }) { Text("Redo") }
+                OutlinedButton(onClick = { viewModel.undo() }) {
+                    IconedLabel(Icons.AutoMirrored.Filled.Undo, stringResource(R.string.action_undo))
+                }
+                OutlinedButton(onClick = { viewModel.redo() }) {
+                    IconedLabel(Icons.AutoMirrored.Filled.Redo, stringResource(R.string.action_redo))
+                }
             }
 
             Row(
@@ -145,24 +187,20 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 OutlinedButton(
                     onClick = { viewModel.captureNoiseProfile() },
                     enabled = selectedClip != null && !isWorking,
-                ) { Text("Get noise") }
+                ) {
+                    IconedLabel(Icons.Filled.GraphicEq, stringResource(R.string.action_get_noise))
+                }
                 OutlinedButton(
                     onClick = { showNoiseScopeDialog = true },
                     enabled = selectedClip != null && !isWorking,
-                ) { Text("Reduce noise") }
+                ) {
+                    IconedLabel(Icons.Filled.FilterAlt, stringResource(R.string.action_reduce_noise))
+                }
             }
 
+            Text(text = statusText, style = MaterialTheme.typography.bodyMedium)
             Text(
-                text = when {
-                    isRecording -> "Recording ${formatTime(recordingElapsedMs)}"
-                    isWorking -> "$status (working...)"
-                    else -> status
-                },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                text = "${formatTime(playheadMs)} / ${formatTime(durationMs)}" +
-                    if (selectedClip != null) "  •  selected: ${formatTime(selectedClip.sourceInMs)}–${formatTime(selectedClip.sourceOutMs)}" else "",
+                text = listOfNotNull(timeText, selectedText).joinToString("  •  "),
                 style = MaterialTheme.typography.labelLarge,
             )
 
@@ -176,8 +214,10 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 recordingElapsedMs = recordingElapsedMs,
                 onSelect = { viewModel.selectClip(it) },
                 onSeek = { viewModel.seek(it) },
-                onLongPress = { trackId, clipId, atMs ->
-                    splitRequest = SplitRequest(trackId, clipId, atMs)
+                onDeleteClip = { trackId, clipId -> viewModel.deleteClip(trackId, clipId) },
+                onSplitClip = { trackId, clipId, atMs -> viewModel.splitClip(trackId, clipId, atMs) },
+                onReduceNoiseForTrack = { trackId ->
+                    viewModel.reduceNoise(EditorViewModel.NoiseScope.CURRENT_TRACK, trackId)
                 },
                 onGestureStart = { viewModel.beginGesture() },
                 onMove = { trackId, clipId, start -> viewModel.moveClip(trackId, clipId, start) },
@@ -186,37 +226,16 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
             )
 
             Text(
-                text = "Tip: tap a clip to select it, drag its body to move it, drag either edge to crop, " +
-                    "or long-press it to split. Tap the ruler to move the playhead. " +
-                    "Crop to a noise-only passage, tap Get noise, then Reduce noise.",
+                text = stringResource(R.string.tip_timeline),
                 style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        splitRequest?.let { request ->
-            AlertDialog(
-                onDismissRequest = { splitRequest = null },
-                title = { Text("Split clip?") },
-                text = { Text("Split this clip at ${formatTime(request.atMs)}?") },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            viewModel.splitClip(request.trackId, request.clipId, request.atMs)
-                            splitRequest = null
-                        },
-                    ) { Text("Split") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { splitRequest = null }) { Text("Cancel") }
-                },
             )
         }
 
         if (showNoiseScopeDialog) {
             AlertDialog(
                 onDismissRequest = { showNoiseScopeDialog = false },
-                title = { Text("Reduce noise") },
-                text = { Text("Apply the captured noise profile to:") },
+                title = { Text(stringResource(R.string.dialog_noise_scope_title)) },
+                text = { Text(stringResource(R.string.dialog_noise_scope_message)) },
                 confirmButton = {
                     Row {
                         TextButton(
@@ -224,33 +243,32 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                                 viewModel.reduceNoise(EditorViewModel.NoiseScope.CURRENT_TRACK)
                                 showNoiseScopeDialog = false
                             },
-                        ) { Text("Current track only") }
+                        ) {
+                            Text(stringResource(R.string.dialog_noise_scope_current))
+                        }
                         TextButton(
                             onClick = {
                                 viewModel.reduceNoise(EditorViewModel.NoiseScope.ALL_TRACKS)
                                 showNoiseScopeDialog = false
                             },
-                        ) { Text("All tracks") }
+                        ) {
+                            Text(stringResource(R.string.dialog_noise_scope_all))
+                        }
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showNoiseScopeDialog = false }) { Text("Cancel") }
+                    TextButton(onClick = { showNoiseScopeDialog = false }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 },
             )
         }
     }
 }
 
-private data class SplitRequest(
-    val trackId: String,
-    val clipId: String,
-    val atMs: Long,
-)
-
-private fun formatTime(ms: Long): String {
-    val totalSeconds = ms / 1_000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    val tenths = (ms % 1_000) / 100
-    return "%d:%02d.%d".format(minutes, seconds, tenths)
+@Composable
+private fun IconedLabel(icon: ImageVector, label: String) {
+    Icon(icon, contentDescription = null)
+    Spacer(Modifier.width(8.dp))
+    Text(label)
 }
