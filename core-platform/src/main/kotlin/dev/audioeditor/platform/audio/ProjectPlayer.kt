@@ -6,12 +6,13 @@ import android.media.AudioTrack
 import dev.audioeditor.core.model.Project
 import dev.audioeditor.core.pcm.FilePcmSource
 import dev.audioeditor.core.pcm.Mixer
+import dev.audioeditor.core.pcm.Pcm16
 import dev.audioeditor.core.pcm.PcmSource
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +39,8 @@ class ProjectPlayer {
         val totalFrames = Mixer.durationFrames(project)
         if (totalFrames <= 0) return
 
-        val startFrame = (fromMs * project.sampleRate / 1_000L).coerceIn(0L, totalFrames.toLong()).toInt()
+        val startFrame = (fromMs * project.sampleRate / 1_000L)
+            .coerceIn(0L, totalFrames.toLong()).toInt()
         val channelMask = if (project.channels == 1) {
             AudioFormat.CHANNEL_OUT_MONO
         } else {
@@ -50,8 +52,9 @@ class ProjectPlayer {
             AudioFormat.ENCODING_PCM_16BIT,
         )
         check(minBuffer > 0) { "Project sample rate is not supported for playback" }
-        val bufferFrames = 2_048
 
+        val bytesPerFrame = project.channels * 2
+        val bufferFrames = 2_048
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -66,7 +69,7 @@ class ProjectPlayer {
                     .setChannelMask(channelMask)
                     .build(),
             )
-            .setBufferSizeInBytes(maxOf(minBuffer, bufferFrames * project.channels * 2))
+            .setBufferSizeInBytes(maxOf(minBuffer, bufferFrames * bytesPerFrame))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
@@ -85,27 +88,31 @@ class ProjectPlayer {
                     while (isActive && frame < totalFrames) {
                         val count = minOf(bufferFrames, totalFrames - frame)
                         val pcm = Mixer.mix(project, sources, frame, count)
-                        val written = track.write(pcm, 0, pcm.size, AudioTrack.WRITE_NON_BLOCKING)
+                        // AudioTrack is configured for PCM16, so write bytes, not floats.
+                        val bytes = Pcm16.toBytes(pcm)
+                        val written = track.write(bytes, 0, bytes.size, AudioTrack.WRITE_NON_BLOCKING)
                         if (written <= 0) {
                             delay(10)
                             continue
                         }
-                        frame += written / project.channels
+                        frame += written / bytesPerFrame
 
-                        val position = startFrame + track.playbackHeadPosition
-                        _playheadMs.value = minOf(
-                            totalFrames.toLong(),
-                            position.toLong() * 1_000L / project.sampleRate,
-                        )
+                        val position = (startFrame + track.playbackHeadPosition)
+                            .coerceAtMost(totalFrames)
+                        _playheadMs.value = position * 1_000L / project.sampleRate
                     }
-                    // Let the already-written buffers drain before reporting completion.
-                    while (isActive && track.playbackHeadPosition + startFrame < totalFrames) {
+
+                    // Let queued buffers drain so the stripe reaches the end.
+                    while (isActive && startFrame + track.playbackHeadPosition < totalFrames) {
                         delay(20)
                     }
                 } finally {
                     sources.values.forEach { it.close() }
                     withContext(Dispatchers.Main) {
-                        if (audioTrack === track) finish()
+                        if (audioTrack === track) {
+                            _playheadMs.value = totalFrames * 1_000L / project.sampleRate
+                            finish()
+                        }
                     }
                 }
             }
