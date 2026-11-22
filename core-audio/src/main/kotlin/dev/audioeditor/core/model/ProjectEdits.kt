@@ -86,6 +86,18 @@ object ProjectEdits {
         return ProjectOps.replaceTrack(withoutClip, updatedTarget)
     }
 
+    /** Moves a track to a new vertical position in the project. */
+    fun moveTrack(project: Project, trackId: String, targetIndex: Int): Project {
+        val fromIndex = project.tracks.indexOfFirst { it.id == trackId }
+        if (fromIndex < 0 || targetIndex !in project.tracks.indices || fromIndex == targetIndex) {
+            return project
+        }
+        val tracks = project.tracks.toMutableList()
+        val track = tracks.removeAt(fromIndex)
+        tracks.add(targetIndex, track)
+        return project.copy(tracks = tracks)
+    }
+
     /** Splits a clip at a timeline position into two adjacent clips. */
     fun split(project: Project, trackId: String, clipId: String, atTimelineMs: Long): Project {
         val clip = requireClip(project, trackId, clipId)

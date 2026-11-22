@@ -196,6 +196,28 @@ class ProjectEditsTest {
     }
 
     @Test
+    fun moveTrackReordersTracksWithoutChangingClips() {
+        val t2 = Track("t2", "Track 2")
+        val t3 = Track("t3", "Track 3")
+        val threeTracks = project.copy(tracks = listOf(project.tracks[0], t2, t3))
+
+        val moved = ProjectEdits.moveTrack(threeTracks, "t1", 2)
+
+        assertEquals(listOf("t2", "t3", "t1"), moved.tracks.map { it.id })
+        assertEquals(project.tracks[0], moved.tracks[2])
+    }
+
+    @Test
+    fun moveTrackIgnoresInvalidTargets() {
+        val t2 = Track("t2", "Track 2")
+        val twoTracks = project.copy(tracks = listOf(project.tracks[0], t2))
+
+        assertEquals(twoTracks, ProjectEdits.moveTrack(twoTracks, "t1", 0))
+        assertEquals(twoTracks, ProjectEdits.moveTrack(twoTracks, "t1", 5))
+        assertEquals(twoTracks, ProjectEdits.moveTrack(twoTracks, "missing", 1))
+    }
+
+    @Test
     fun splitCreatesTwoAdjacentClips() {
         val split = ProjectEdits.split(project, "t1", "c1", 3_500L)
         val clips = split.tracks[0].clips
