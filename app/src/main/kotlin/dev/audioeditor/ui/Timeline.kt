@@ -53,6 +53,8 @@ fun Timeline(
     val durationMs = maxOf(5_000L, ProjectOps.durationMs(project))
     val colors = MaterialTheme.colorScheme
     var dragState by remember { mutableStateOf<ClipHit?>(null) }
+    val currentProject = remember { mutableStateOf(project) }
+    currentProject.value = project
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val pxPerMs = with(density) { maxWidth.toPx() } / durationMs
@@ -63,17 +65,17 @@ fun Timeline(
                 .fillMaxWidth()
                 .height(totalHeight)
                 .background(colors.surface)
-                .pointerInput(project, pxPerMs) {
+                .pointerInput(pxPerMs) {
                     detectTapGestures { offset ->
                         val timeMs = (offset.x / pxPerMs).toLong().coerceIn(0L, durationMs)
                         onSeek(timeMs)
-                        onSelect(hitClip(project, offset, pxPerMs, with(density) { trackHeight.toPx() })?.clip?.id)
+                        onSelect(hitClip(currentProject.value, offset, pxPerMs, with(density) { trackHeight.toPx() })?.clip?.id)
                     }
                 }
-                .pointerInput(project, pxPerMs) {
+                .pointerInput(pxPerMs) {
                     detectDragGestures(
                         onDragStart = { offset ->
-                            val hit = hitClip(project, offset, pxPerMs, with(density) { trackHeight.toPx() })
+                            val hit = hitClip(currentProject.value, offset, pxPerMs, with(density) { trackHeight.toPx() })
                             if (hit != null) {
                                 dragState = hit
                                 onSelect(hit.clip.id)
