@@ -13,6 +13,7 @@ AOSP media APIs. No FFmpeg or proprietary SDKs are used.
 - Drag clips along the timeline or onto another track, undo/redo
 - Clips on the same track are pushed apart so they never overlap; place audio on
   different tracks when overlap is wanted
+- Drag a track's left handle to reorder its line vertically
 - Fixed timeline zoom with horizontal/vertical panning by dragging empty space,
   so many tracks keep a readable fixed height
 - Hold a clip for a menu with **Delete**, **Split**, and **Noise Reduction**
@@ -22,11 +23,12 @@ AOSP media APIs. No FFmpeg or proprietary SDKs are used.
 - Live waveform and elapsed time while recording; moving red playhead during playback
 - All UI text lives in `app/src/main/res/values/strings.xml` for easy translation
 
-The timeline shows cached min/max waveform peaks. Drag empty space to scroll
-(no long press needed), drag the ruler to scrub, tap a clip to select it, drag
-its body to move it horizontally or between tracks, and drag an edge to trim or
-extend it. A brief hold starts a move; a longer hold (about 0.7 s) opens the
-clip menu.
+The timeline shows cached min/max waveform peaks. Drag a track's left handle to
+reorder it vertically. Drag empty space to scroll (no long press needed), drag
+the ruler to scrub, tap a clip to select it, drag its body to move it
+horizontally or between tracks, and drag an edge to trim or extend it. Holding
+a clip still for about 0.5 s opens the clip menu; moving before that starts a
+clip drag instead.
 
 ## Build
 

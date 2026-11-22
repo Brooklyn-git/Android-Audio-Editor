@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -35,6 +36,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -80,12 +82,11 @@ private data class ClipMenuRequest(
 
 private enum class Edge { BODY, LEFT, RIGHT }
 
-private enum class GestureMode { PENDING, MOVE, TRIM_LEFT, TRIM_RIGHT, PAN, SCRUB, MENU }
+private enum class GestureMode { PENDING, MOVE, TRIM_LEFT, TRIM_RIGHT, PAN, SCRUB, MENU, REORDER_TRACK }
 
 /** Fixed zoom: the timeline scrolls instead of squeezing audio to fit the screen. */
 private const val PX_PER_MS = 0.12f
-private const val MOVE_HOLD_MS = 140L
-private const val MENU_HOLD_MS = 700L
+private const val MENU_HOLD_MS = 500L
 private const val AUTO_SCROLL_PX_PER_EVENT = 14f
 
 @Composable
@@ -108,6 +109,7 @@ fun Timeline(
     onMoveClip: (trackId: String, clipId: String, targetTrackId: String, startMs: Long) -> Unit,
     onTrimLeft: (trackId: String, clipId: String, sourceInMs: Long) -> Unit,
     onTrimRight: (trackId: String, clipId: String, sourceOutMs: Long) -> Unit,
+    onReorderTrack: (trackId: String, targetIndex: Int) -> Unit,
     onGestureEnd: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -118,6 +120,7 @@ fun Timeline(
     var panX by remember { mutableFloatStateOf(0f) }
     var panY by remember { mutableFloatStateOf(0f) }
     var menuRequest by remember { mutableStateOf<ClipMenuRequest?>(null) }
+    var reorderTargetIndex by remember { mutableIntStateOf(-1) }
 
     val currentProject = rememberUpdatedState(project)
     val currentOnSelect = rememberUpdatedState(onSelect)
@@ -125,6 +128,7 @@ fun Timeline(
     val currentOnMoveClip = rememberUpdatedState(onMoveClip)
     val currentOnTrimLeft = rememberUpdatedState(onTrimLeft)
     val currentOnTrimRight = rememberUpdatedState(onTrimRight)
+    val currentOnReorderTrack = rememberUpdatedState(onReorderTrack)
     val currentOnGestureStart = rememberUpdatedState(onGestureStart)
     val currentOnGestureEnd = rememberUpdatedState(onGestureEnd)
 
@@ -142,6 +146,7 @@ fun Timeline(
         val rulerPx = with(density) { 32.dp.toPx() }
         val edgeTouchPx = with(density) { 24.dp.toPx() }
         val handleWidthPx = with(density) { 6.dp.toPx() }
+        val trackHeaderPx = with(density) { 44.dp.toPx() }
         val autoScrollEdgePx = with(density) { 40.dp.toPx() }
         val liveOffsetPx = if (isRecording) trackPx else 0f
         val trackTopOffset = rulerPx + liveOffsetPx
@@ -178,10 +183,21 @@ fun Timeline(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             menuRequest = null
+                            reorderTargetIndex = -1
                             val start = down.position
                             val startPan = Offset(panX, panY)
                             val startContent = start + startPan
-                            val hit = hitClip(
+
+                            fun trackIndexAt(screenY: Float): Int? {
+                                val contentY = screenY + panY
+                                if (contentY < trackTopOffset) return null
+                                val index = ((contentY - trackTopOffset) / trackPx).toInt()
+                                return if (index in currentProject.value.tracks.indices) index else null
+                            }
+
+                            val startTrackIndex = trackIndexAt(start.y)
+                            val onHeader = start.x < trackHeaderPx && startTrackIndex != null
+                            val hit = if (onHeader) null else hitClip(
                                 project = currentProject.value,
                                 contentOffset = startContent,
                                 pxPerMs = PX_PER_MS,
@@ -191,6 +207,7 @@ fun Timeline(
                             )
 
                             var mode = when {
+                                onHeader -> GestureMode.REORDER_TRACK
                                 start.y < rulerPx -> GestureMode.SCRUB
                                 hit?.edge == Edge.LEFT -> GestureMode.TRIM_LEFT
                                 hit?.edge == Edge.RIGHT -> GestureMode.TRIM_RIGHT
@@ -198,27 +215,32 @@ fun Timeline(
                                 else -> GestureMode.PAN
                             }
                             var activeTrackId = hit?.track?.id
+                            val reorderTrackId = if (onHeader) {
+                                currentProject.value.tracks[startTrackIndex].id
+                            } else null
                             var gestureStarted = false
                             var menuShown = false
                             var moved = false
-                            var moveJob: Job? = null
                             var menuJob: Job? = null
+
+                            fun beginTrackGesture(nextMode: GestureMode) {
+                                if (gestureStarted || menuShown) return
+                                gestureStarted = true
+                                mode = nextMode
+                                menuJob?.cancel()
+                                currentOnGestureStart.value()
+                            }
 
                             fun beginClipGesture(nextMode: GestureMode) {
                                 if (gestureStarted || menuShown || hit == null) return
-                                gestureStarted = true
-                                mode = nextMode
-                                moveJob?.cancel()
-                                menuJob?.cancel()
+                                beginTrackGesture(nextMode)
                                 currentOnSelect.value(hit.clip.id)
-                                currentOnGestureStart.value()
                             }
 
                             fun showMenu() {
                                 if (gestureStarted || menuShown || hit == null) return
                                 menuShown = true
                                 mode = GestureMode.MENU
-                                moveJob?.cancel()
                                 menuJob?.cancel()
                                 currentOnSelect.value(hit.clip.id)
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -249,20 +271,26 @@ fun Timeline(
                                 }
                             }
 
-                            if (mode == GestureMode.PENDING) {
-                                currentOnSelect.value(hit?.clip?.id)
-                                moveJob = timerScope.launch {
-                                    delay(MOVE_HOLD_MS)
-                                    beginClipGesture(GestureMode.MOVE)
+                            when (mode) {
+                                GestureMode.PENDING -> {
+                                    currentOnSelect.value(hit?.clip?.id)
+                                    menuJob = timerScope.launch {
+                                        delay(MENU_HOLD_MS)
+                                        showMenu()
+                                    }
                                 }
-                                menuJob = timerScope.launch {
-                                    delay(MENU_HOLD_MS)
-                                    showMenu()
+                                GestureMode.REORDER_TRACK -> {
+                                    beginTrackGesture(GestureMode.REORDER_TRACK)
+                                    reorderTargetIndex = startTrackIndex ?: -1
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
-                            } else if (mode == GestureMode.SCRUB) {
-                                currentOnSeek.value((startContent.x / PX_PER_MS).toLong())
-                            } else if (mode == GestureMode.TRIM_LEFT || mode == GestureMode.TRIM_RIGHT) {
-                                beginClipGesture(mode)
+                                GestureMode.SCRUB -> {
+                                    currentOnSeek.value((startContent.x / PX_PER_MS).toLong())
+                                }
+                                GestureMode.TRIM_LEFT,
+                                GestureMode.TRIM_RIGHT,
+                                -> beginClipGesture(mode)
+                                else -> Unit
                             }
 
                             while (true) {
@@ -292,6 +320,27 @@ fun Timeline(
                                             .coerceIn(0f, currentMaxPanX.value)
                                         panY = (startPan.y - (change.position.y - start.y))
                                             .coerceIn(0f, currentMaxPanY.value)
+                                    }
+                                    GestureMode.REORDER_TRACK -> {
+                                        change.consume()
+                                        if (change.position.y < rulerPx + autoScrollEdgePx) {
+                                            panY = (panY - AUTO_SCROLL_PX_PER_EVENT).coerceAtLeast(0f)
+                                        } else if (change.position.y >
+                                            currentViewportHeight.value - autoScrollEdgePx
+                                        ) {
+                                            panY = (panY + AUTO_SCROLL_PX_PER_EVENT)
+                                                .coerceAtMost(currentMaxPanY.value)
+                                        }
+                                        val target = trackIndexAt(change.position.y)
+                                        if (target != null && target != reorderTargetIndex) {
+                                            reorderTargetIndex = target
+                                            if (reorderTrackId != null) {
+                                                currentOnReorderTrack.value(reorderTrackId, target)
+                                                haptic.performHapticFeedback(
+                                                    HapticFeedbackType.TextHandleMove,
+                                                )
+                                            }
+                                        }
                                     }
                                     GestureMode.MOVE,
                                     GestureMode.TRIM_LEFT,
@@ -343,9 +392,9 @@ fun Timeline(
                                 }
                             }
 
-                            moveJob?.cancel()
                             menuJob?.cancel()
                             if (gestureStarted) currentOnGestureEnd.value()
+                            reorderTargetIndex = -1
                             if (!moved && !menuShown && mode == GestureMode.PENDING) {
                                 currentOnSelect.value(hit?.clip?.id)
                             }
@@ -453,6 +502,16 @@ fun Timeline(
                     strokeWidth = if (isRecording) 1f else 2f,
                 )
             }
+
+            drawTrackHandles(
+                colors = colors,
+                trackCount = project.tracks.size,
+                trackPx = trackPx,
+                trackTopOffset = trackTopOffset - panY,
+                rulerPx = rulerPx,
+                headerWidth = trackHeaderPx,
+                targetIndex = reorderTargetIndex,
+            )
 
             drawScrollIndicators(
                 colors = colors,
@@ -569,6 +628,52 @@ private fun DrawScope.drawRuler(
         end = Offset(width, rulerPx),
         strokeWidth = 1f,
     )
+}
+
+private fun DrawScope.drawTrackHandles(
+    colors: ColorScheme,
+    trackCount: Int,
+    trackPx: Float,
+    trackTopOffset: Float,
+    rulerPx: Float,
+    headerWidth: Float,
+    targetIndex: Int,
+) {
+    clipRect(top = rulerPx) {
+        for (index in 0 until trackCount) {
+            val top = trackTopOffset + index * trackPx
+            drawRect(
+                color = colors.surfaceVariant.copy(alpha = 0.95f),
+                topLeft = Offset(0f, top),
+                size = Size(headerWidth, trackPx),
+            )
+            drawLine(
+                color = colors.outlineVariant,
+                start = Offset(headerWidth, top),
+                end = Offset(headerWidth, top + trackPx),
+                strokeWidth = 1f,
+            )
+            val cx = headerWidth / 2f
+            val cy = top + trackPx / 2f
+            for (row in -1..1) {
+                drawLine(
+                    color = colors.onSurfaceVariant.copy(alpha = 0.75f),
+                    start = Offset(cx - 8f, cy + row * 6f),
+                    end = Offset(cx + 8f, cy + row * 6f),
+                    strokeWidth = 2f,
+                )
+            }
+        }
+        if (targetIndex in 0 until trackCount) {
+            val y = trackTopOffset + targetIndex * trackPx
+            drawLine(
+                color = colors.primary,
+                start = Offset(0f, y),
+                end = Offset(headerWidth, y),
+                strokeWidth = 3f,
+            )
+        }
+    }
 }
 
 private fun DrawScope.drawScrollIndicators(

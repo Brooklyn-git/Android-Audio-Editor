@@ -262,6 +262,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (gestureBase != null) publish(next) else commit(next)
     }
 
+    fun reorderTrack(trackId: String, targetIndex: Int) {
+        val base = gestureBase ?: _project.value
+        val next = ProjectEdits.moveTrack(base, trackId, targetIndex)
+        if (gestureBase != null) publish(next) else commit(next)
+    }
+
     fun endGesture() {
         val base = gestureBase
         gestureBase = null

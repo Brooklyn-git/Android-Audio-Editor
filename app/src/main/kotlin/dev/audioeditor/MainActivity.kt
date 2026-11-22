@@ -229,6 +229,7 @@ fun EditorScreen(viewModel: EditorViewModel = viewModel()) {
                 },
                 onTrimLeft = { trackId, clipId, sourceIn -> viewModel.trimLeft(trackId, clipId, sourceIn) },
                 onTrimRight = { trackId, clipId, sourceOut -> viewModel.trimRight(trackId, clipId, sourceOut) },
+                onReorderTrack = { trackId, targetIndex -> viewModel.reorderTrack(trackId, targetIndex) },
                 onGestureEnd = { viewModel.endGesture() },
             )
 
