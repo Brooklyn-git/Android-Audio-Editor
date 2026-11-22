@@ -1,5 +1,6 @@
 package dev.audioeditor.core.pcm
 
+import java.io.Closeable
 import java.io.DataInputStream
 import java.io.File
 import java.io.InputStream
@@ -54,41 +55,66 @@ object WavCodec {
     fun decode(file: File): PcmBuffer = file.inputStream().use { decode(it) }
 
     fun encode(output: OutputStream, sampleRate: Int, channels: Int, samples: FloatArray) {
-        require(sampleRate > 0 && channels > 0)
         require(samples.size % channels == 0)
-
-        val dataSize = samples.size * 2
-        val header = ByteArray(44)
-        writeAscii(header, 0, "RIFF")
-        writeIntLe(header, 4, 36 + dataSize)
-        writeAscii(header, 8, "WAVE")
-        writeAscii(header, 12, "fmt ")
-        writeIntLe(header, 16, 16)
-        writeShortLe(header, 20, PCM_FORMAT)
-        writeShortLe(header, 22, channels)
-        writeIntLe(header, 24, sampleRate)
-        writeIntLe(header, 28, sampleRate * channels * 2)
-        writeShortLe(header, 32, channels * 2)
-        writeShortLe(header, 34, 16)
-        writeAscii(header, 36, "data")
-        writeIntLe(header, 40, dataSize)
-        output.write(header)
-
-        val chunk = ByteArray(8192)
-        var offset = 0
-        while (offset < samples.size) {
-            val count = minOf(chunk.size / 2, samples.size - offset)
-            for (i in 0 until count) {
-                val value = samples[offset + i].coerceIn(-1f, 1f)
-                writeShortLe(chunk, i * 2, (value * 32767f).roundToInt())
-            }
-            output.write(chunk, 0, count * 2)
-            offset += count
+        WavStreamWriter(output, sampleRate, channels, samples.size / channels).use {
+            it.write(samples)
         }
     }
 
     fun encode(file: File, sampleRate: Int, channels: Int, samples: FloatArray) =
         file.outputStream().use { encode(it, sampleRate, channels, samples) }
+
+    /** Writes a WAV header up front, then accepts PCM chunks of any size. */
+    class WavStreamWriter(
+        private val output: OutputStream,
+        sampleRate: Int,
+        val channels: Int,
+        val frameCount: Int,
+    ) : Closeable {
+        private var framesWritten = 0
+
+        init {
+            require(sampleRate > 0 && channels > 0 && frameCount >= 0)
+            val header = ByteArray(44)
+            writeAscii(header, 0, "RIFF")
+            writeIntLe(header, 4, 36 + frameCount * channels * 2)
+            writeAscii(header, 8, "WAVE")
+            writeAscii(header, 12, "fmt ")
+            writeIntLe(header, 16, 16)
+            writeShortLe(header, 20, PCM_FORMAT)
+            writeShortLe(header, 22, channels)
+            writeIntLe(header, 24, sampleRate)
+            writeIntLe(header, 28, sampleRate * channels * 2)
+            writeShortLe(header, 32, channels * 2)
+            writeShortLe(header, 34, 16)
+            writeAscii(header, 36, "data")
+            writeIntLe(header, 40, frameCount * channels * 2)
+            output.write(header)
+        }
+
+        fun write(samples: FloatArray) {
+            require(samples.size % channels == 0)
+            require(framesWritten + samples.size / channels <= frameCount) {
+                "More PCM samples written than declared in the WAV header"
+            }
+            val chunk = ByteArray(8192)
+            var offset = 0
+            while (offset < samples.size) {
+                val count = minOf(chunk.size / 2, samples.size - offset)
+                for (i in 0 until count) {
+                    val value = samples[offset + i].coerceIn(-1f, 1f)
+                    writeShortLe(chunk, i * 2, (value * 32767f).roundToInt())
+                }
+                output.write(chunk, 0, count * 2)
+                offset += count
+            }
+            framesWritten += samples.size / channels
+        }
+
+        override fun close() {
+            output.close()
+        }
+    }
 
     private fun expectAscii(data: DataInputStream, expected: String) {
         val actual = readAsciiOrNull(data)
