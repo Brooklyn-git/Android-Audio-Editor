@@ -27,9 +27,11 @@
     <string name="dialog_noise_scope_all">All tracks</string>
 
     <string name="status_ready">Ready</string>
+    <string name="status_unknown_error">unknown error</string>
     <string name="status_working">%1$s (working...)</string>
     <string name="status_recording">Recording %1$s</string>
     <string name="status_importing">Importing audio...</string>
+    <string name="status_imported">Imported %1$s</string>
     <string name="status_import_failed">Import failed: %1$s</string>
     <string name="status_recording_start_failed">Could not start recording: %1$s</string>
     <string name="status_saving_recording">Saving recording...</string>

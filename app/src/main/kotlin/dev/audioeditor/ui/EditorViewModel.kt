@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.audioeditor.R
 import dev.audioeditor.core.dsp.NoiseProfile
 import dev.audioeditor.core.model.AudioSourceRef
 import dev.audioeditor.core.model.Clip
@@ -44,7 +45,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedClipId = MutableStateFlow<String?>(null)
     val selectedClipId: StateFlow<String?> = _selectedClipId.asStateFlow()
 
-    private val _status = MutableStateFlow("Ready")
+    private val _status = MutableStateFlow(text(R.string.status_ready))
     val status: StateFlow<String> = _status.asStateFlow()
 
     private val _isRecording = MutableStateFlow(false)
@@ -90,7 +91,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun import(uri: Uri) = viewModelScope.launch {
         _isWorking.value = true
-        _status.value = "Importing audio..."
+        _status.value = text(R.string.status_importing)
         try {
             val projectId = _project.value.id
             val sourceId = newId()
@@ -117,9 +118,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             commit(ProjectOps.addSource(current, imported.source).copy(tracks = tracks))
             _peaks.value = _peaks.value + (imported.source.id to imported.peaks)
             _selectedClipId.value = clip.id
-            _status.value = "Imported ${imported.source.name}"
+            _status.value = text(R.string.status_imported, imported.source.name)
         } catch (e: Exception) {
-            _status.value = "Import failed: ${e.message ?: "unknown error"}"
+            _status.value = text(
+                R.string.status_import_failed,
+                e.message ?: text(R.string.status_unknown_error),
+            )
         } finally {
             _isWorking.value = false
         }
@@ -134,20 +138,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             recorder.start(wavFile)
             sourceIdForRecording = sourceId
             _isRecording.value = true
-            _status.value = "Recording..."
+            _status.value = text(R.string.status_recording, formatTime(0L))
         } catch (e: Exception) {
-            _status.value = "Could not start recording: ${e.message ?: "unknown error"}"
+            _status.value = text(
+                R.string.status_recording_start_failed,
+                e.message ?: text(R.string.status_unknown_error),
+            )
         }
     }
 
     fun stopRecording() = viewModelScope.launch {
         if (!_isRecording.value) return@launch
-        _status.value = "Saving recording..."
+        _status.value = text(R.string.status_saving_recording)
         try {
             val result = recorder.stop() ?: return@launch
             _isRecording.value = false
             if (result.frameCount <= 0) {
-                _status.value = "Nothing was recorded"
+                _status.value = text(R.string.status_nothing_recorded)
                 return@launch
             }
 
@@ -186,21 +193,27 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             commit(ProjectOps.addSource(current, source).copy(tracks = tracks))
             _peaks.value = _peaks.value + (source.id to peaks)
             _selectedClipId.value = clip.id
-            _status.value = "Recording added"
+            _status.value = text(R.string.status_recording_added)
         } catch (e: Exception) {
             _isRecording.value = false
-            _status.value = "Could not save recording: ${e.message ?: "unknown error"}"
+            _status.value = text(
+                R.string.status_recording_save_failed,
+                e.message ?: text(R.string.status_unknown_error),
+            )
         }
     }
 
     fun export(uri: Uri) = viewModelScope.launch {
         _isWorking.value = true
-        _status.value = "Exporting WAV..."
+        _status.value = text(R.string.status_exporting)
         try {
             val written = AudioExporter.export(getApplication(), _project.value, uri)
-            _status.value = "Exported ${written / 1_000} ms of audio"
+            _status.value = text(R.string.status_exported, written / 1_000)
         } catch (e: Exception) {
-            _status.value = "Export failed: ${e.message ?: "unknown error"}"
+            _status.value = text(
+                R.string.status_export_failed,
+                e.message ?: text(R.string.status_unknown_error),
+            )
         } finally {
             _isWorking.value = false
         }
@@ -243,7 +256,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun splitClip(trackId: String, clipId: String, atMs: Long) {
         commit(ProjectEdits.split(_project.value, trackId, clipId, atMs))
-        _status.value = "Split at ${atMs / 1_000}.${atMs % 1_000 / 100}s"
+        _status.value = text(R.string.status_split_at, formatTime(atMs))
+    }
+
+    fun deleteClip(trackId: String, clipId: String) {
+        if (_selectedClipId.value == clipId) _selectedClipId.value = null
+        commit(ProjectEdits.deleteClip(_project.value, trackId, clipId))
+        _status.value = text(R.string.status_clip_deleted)
     }
 
     fun captureNoiseProfile() {
@@ -252,7 +271,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val source = ProjectOps.sourceById(_project.value, clip.sourceId) ?: return
         viewModelScope.launch {
             _isWorking.value = true
-            _status.value = "Learning noise profile..."
+            _status.value = text(R.string.status_learning_noise)
             try {
                 val buffer = withContext(Dispatchers.IO) { WavCodec.decode(File(source.wavPath)) }
                 val profile = withContext(Dispatchers.IO) {
@@ -263,55 +282,86 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
                 capturedNoise = CapturedNoise(source.id, selected.first.id, profile)
-                _status.value = "Noise profile captured from ${clip.durationMs} ms"
+                _status.value = text(R.string.status_noise_captured, clip.durationMs)
             } catch (e: Exception) {
-                _status.value = "Could not capture noise: ${e.message ?: "unknown error"}"
+                _status.value = text(
+                    R.string.status_noise_capture_failed,
+                    e.message ?: text(R.string.status_unknown_error),
+                )
             } finally {
                 _isWorking.value = false
             }
         }
     }
 
-    fun reduceNoise(scope: NoiseScope) {
+    fun reduceNoise(scope: NoiseScope, trackId: String? = null) {
         val captured = capturedNoise ?: run {
-            _status.value = "Capture a noise profile first"
+            _status.value = text(R.string.status_noise_profile_missing)
             return
         }
-        val source = ProjectOps.sourceById(_project.value, captured.sourceId) ?: return
-        val projectId = _project.value.id
-        val newId = newId()
+        val targetTrackId = if (scope == NoiseScope.CURRENT_TRACK) {
+            trackId ?: captured.trackId
+        } else {
+            null
+        }
         viewModelScope.launch {
             _isWorking.value = true
-            _status.value = "Reducing noise..."
+            _status.value = text(R.string.status_reducing_noise)
             try {
-                val denoised = NoiseProcessor.denoise(
-                    source = source,
-                    profile = captured.profile,
-                    wavFile = store.sourceFile(projectId, newId),
-                    peaksFile = store.peaksFile(projectId, newId),
-                )
                 val current = _project.value
+                val sourceIds = current.tracks
+                    .filter { targetTrackId == null || it.id == targetTrackId }
+                    .flatMap { track -> track.clips.map { it.sourceId } }
+                    .distinct()
+                val sources = sourceIds.mapNotNull { id ->
+                    ProjectOps.sourceById(current, id)?.let { id to it }
+                }
+                if (sources.isEmpty()) {
+                    _status.value = text(R.string.status_noise_no_audio)
+                    return@launch
+                }
+
+                val replacements = mutableMapOf<String, AudioSourceRef>()
+                val newPeaks = mutableMapOf<String, PeakPyramid>()
+                sources.forEach { (oldId, source) ->
+                    val denoised = NoiseProcessor.denoise(
+                        source = source,
+                        profile = captured.profile,
+                        wavFile = store.sourceFile(current.id, newId()),
+                        peaksFile = store.peaksFile(current.id, newId()),
+                    )
+                    replacements[oldId] = denoised
+                    val peaksPath = denoised.peaksPath ?: return@forEach
+                    newPeaks[denoised.id] = PeakPyramid.read(File(peaksPath).inputStream())
+                }
+
                 val tracks = current.tracks.map { track ->
-                    if (scope == NoiseScope.CURRENT_TRACK && track.id != captured.trackId) {
+                    if (targetTrackId != null && track.id != targetTrackId) {
                         track
                     } else {
                         track.copy(clips = track.clips.map { clip ->
-                            if (clip.sourceId == captured.sourceId) {
-                                clip.copy(sourceId = denoised.id)
-                            } else {
-                                clip
-                            }
+                            replacements[clip.sourceId]?.let { clip.copy(sourceId = it.id) } ?: clip
                         })
                     }
                 }
-                commit(ProjectOps.addSource(current, denoised).copy(tracks = tracks))
-                _peaks.value = _peaks.value + (denoised.id to PeakPyramid.read(
-                    File(denoised.peaksPath!!).inputStream(),
-                ))
+                val withSources = replacements.values.fold(current) { project, source ->
+                    ProjectOps.addSource(project, source)
+                }
+                commit(withSources.copy(tracks = tracks))
+                _peaks.value = _peaks.value + newPeaks
                 capturedNoise = null
-                _status.value = "Noise reduced (${if (scope == NoiseScope.CURRENT_TRACK) "current track" else "all tracks"})"
+                _status.value = text(
+                    if (scope == NoiseScope.CURRENT_TRACK) {
+                        R.string.status_noise_reduced_current
+                    } else {
+                        R.string.status_noise_reduced_all
+                    },
+                )
             } catch (e: Exception) {
-                _status.value = "Noise reduction failed: ${e.message ?: "unknown error"}"
+                _status.value = text(
+                    R.string.status_noise_failed,
+                    e.message ?: text(R.string.status_unknown_error),
+                )
             } finally {
                 _isWorking.value = false
             }
@@ -321,14 +371,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun undo() {
         if (history.undo()) {
             publish(history.current)
-            _status.value = "Undo"
+            _status.value = text(R.string.status_undo)
         }
     }
 
     fun redo() {
         if (history.redo()) {
             publish(history.current)
-            _status.value = "Redo"
+            _status.value = text(R.string.status_redo)
         }
     }
 
@@ -344,6 +394,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun publish(next: Project) {
         _project.value = next
     }
+
+    private fun text(id: Int, vararg args: Any): String =
+        getApplication<Application>().getString(id, *args)
 
     private fun selectedClip(): Pair<Track, Clip>? {
         val id = _selectedClipId.value ?: return null
